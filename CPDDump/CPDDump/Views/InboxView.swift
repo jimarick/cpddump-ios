@@ -86,6 +86,15 @@ struct InboxView: View {
                 tray
             }
             .padding(.horizontal, 14)
+            // Breathing room so the dashed tray edge never touches the
+            // tab bar's divider — matches the side margins.
+            .padding(.bottom, 14)
+            .overlay(alignment: .bottom) {
+                if !selecting, let stats = model.stats?.stats {
+                    StatsSummaryPill(stats: stats)
+                        .padding(.bottom, 26)
+                }
+            }
 
             if selecting {
                 mergeBar
@@ -231,6 +240,8 @@ struct InboxView: View {
                             }
                         }
                         .padding(12)
+                        // Room so the last rows can scroll clear of the pill.
+                        .padding(.bottom, 40)
                         .background(
                             GeometryReader { geometry in
                                 Color.clear.preference(

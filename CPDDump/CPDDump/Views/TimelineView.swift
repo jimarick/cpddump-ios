@@ -192,23 +192,9 @@ struct TimelineView: View {
         }
     }
 
-    /// Slim always-visible period summary — rows scroll behind it.
     private func summaryPill(_ stats: StatsResponse.Stats) -> some View {
-        (Text(InboxView.points(stats.points)).fontWeight(.heavy).foregroundColor(PaperInk.brand)
-            + Text(" CPD points this year · ")
-            + Text("\(stats.activities)").fontWeight(.heavy)
-            + Text(stats.activities == 1 ? " activity" : " activities"))
-            .font(PaperInk.sans(12.5))
-            .foregroundStyle(PaperInk.stone600)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.white.opacity(0.94))
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(PaperInk.ink, lineWidth: 2))
-            .stickerShadow()
-            .tilt(-0.5)
+        StatsSummaryPill(stats: stats)
             .padding(.bottom, 8)
-            .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -298,6 +284,29 @@ struct TimelineView: View {
         parser.dateFormat = "yyyy-MM-dd"
         guard let date = parser.date(from: iso) else { return iso }
         return date.formatted(.dateTime.day().month(.abbreviated).year())
+    }
+}
+
+/// Slim always-visible period summary pill — content scrolls behind it.
+/// Shared by the timeline and inbox pages.
+struct StatsSummaryPill: View {
+    var stats: StatsResponse.Stats
+
+    var body: some View {
+        (Text(InboxView.points(stats.points)).fontWeight(.heavy).foregroundColor(PaperInk.brand)
+            + Text(" CPD points this year · ")
+            + Text("\(stats.activities)").fontWeight(.heavy)
+            + Text(stats.activities == 1 ? " activity" : " activities"))
+            .font(PaperInk.sans(12.5))
+            .foregroundStyle(PaperInk.stone600)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.white.opacity(0.94))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(PaperInk.ink, lineWidth: 2))
+            .stickerShadow()
+            .tilt(-0.5)
+            .allowsHitTesting(false)
     }
 }
 
