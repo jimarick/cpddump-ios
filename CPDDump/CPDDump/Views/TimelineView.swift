@@ -197,7 +197,7 @@ struct TimelineView: View {
 
     private func summaryPill(_ stats: StatsResponse.Stats) -> some View {
         // Sits at the same screen height as the inbox pill.
-        StatsSummaryPill(stats: stats)
+        StatsSummaryPill.period(stats)
             .padding(.bottom, 40)
     }
 
@@ -291,16 +291,29 @@ struct TimelineView: View {
     }
 }
 
-/// Slim always-visible period summary pill — content scrolls behind it.
-/// Shared by the timeline and inbox pages.
+/// Slim always-visible summary pill — content scrolls behind it. Shared
+/// styling for the timeline (period points) and inbox (waiting count).
 struct StatsSummaryPill: View {
-    var stats: StatsResponse.Stats
+    var text: Text
+
+    /// Timeline flavour: points + activity count for the current year.
+    static func period(_ stats: StatsResponse.Stats) -> StatsSummaryPill {
+        StatsSummaryPill(text:
+            Text(InboxView.points(stats.points)).fontWeight(.heavy).foregroundColor(PaperInk.brand)
+                + Text(" CPD points this year · ")
+                + Text("\(stats.activities)").fontWeight(.heavy)
+                + Text(stats.activities == 1 ? " activity" : " activities"))
+    }
+
+    /// Inbox flavour: what's still waiting for review.
+    static func awaiting(_ stats: StatsResponse.Stats) -> StatsSummaryPill {
+        StatsSummaryPill(text:
+            Text("\(stats.awaiting)").fontWeight(.heavy).foregroundColor(PaperInk.brand)
+                + Text(stats.awaiting == 1 ? " item waiting for review" : " items waiting for review"))
+    }
 
     var body: some View {
-        (Text(InboxView.points(stats.points)).fontWeight(.heavy).foregroundColor(PaperInk.brand)
-            + Text(" CPD points this year · ")
-            + Text("\(stats.activities)").fontWeight(.heavy)
-            + Text(stats.activities == 1 ? " activity" : " activities"))
+        text
             .font(PaperInk.sans(12.5))
             .foregroundStyle(PaperInk.stone600)
             .padding(.horizontal, 14)

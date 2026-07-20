@@ -91,7 +91,7 @@ struct InboxView: View {
             .padding(.bottom, 14)
             .overlay(alignment: .bottom) {
                 if !selecting, let stats = model.stats?.stats {
-                    StatsSummaryPill(stats: stats)
+                    StatsSummaryPill.awaiting(stats)
                         .padding(.bottom, 26)
                 }
             }
