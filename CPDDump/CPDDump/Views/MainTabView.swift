@@ -15,6 +15,10 @@ struct MainTabView: View {
     @State private var mergeSeed: MergeSeed?
     @State private var showRecorder = false
     @State private var showDumpSheet = false
+    // While either page is in selection mode its merge bar replaces the
+    // tab bar; the tabs come back on cancel or merge.
+    @State private var inboxSelecting = false
+    @State private var timelineSelecting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,17 +32,20 @@ struct MainTabView: View {
                         onReview: { item in openReview(item) },
                         onMerge: { itemIds in
                             mergeSeed = MergeSeed(inboxItemIds: itemIds)
-                        }
+                        },
+                        selecting: $inboxSelecting
                     )
                 case .timeline:
-                    TimelineView(model: timelineModel) { seed in
+                    TimelineView(model: timelineModel, selecting: $timelineSelecting) { seed in
                         mergeSeed = seed
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            tabBar
+            if !(inboxSelecting || timelineSelecting) {
+                tabBar
+            }
         }
         .background(PaperInk.paper)
         .sheet(item: $reviewItem) { item in

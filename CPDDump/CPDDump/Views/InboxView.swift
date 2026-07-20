@@ -52,10 +52,11 @@ struct InboxView: View {
     var onReview: (InboxItem) -> Void
     /// Present the merge sheet for the selected Ready item ids.
     var onMerge: ([Int]) -> Void
+    /// Owned by MainTabView so the tab bar can step aside while selecting.
+    @Binding var selecting: Bool
     @State private var doodleCeiling: CGFloat = 0
     @State private var binCandidate: InboxItem?
     @State private var discardCandidate: UploadQueue.Pending?
-    @State private var selecting = false
     @State private var selectedIds: Set<Int> = []
 
     var body: some View {
@@ -168,6 +169,8 @@ struct InboxView: View {
         .padding(.top, 8)
     }
 
+    /// Stands in for the tab bar while selecting: Merge leading, Cancel
+    /// trailing, the nudge in between until there's enough to merge.
     private var mergeBar: some View {
         HStack(spacing: 12) {
             Button("Merge \(selectedIds.count) into one") {
@@ -181,24 +184,32 @@ struct InboxView: View {
             .buttonStyle(InkButtonStyle(prominent: true))
             .disabled(selectedIds.count < 2)
 
+            Spacer(minLength: 8)
+
+            if selectedIds.count < 2 {
+                Text("tap the ready ones to stack them")
+                    .font(PaperInk.hand(17))
+                    .foregroundStyle(PaperInk.brandDark)
+                    .tilt(-1.5)
+                    .lineLimit(2)
+
+                Spacer(minLength: 8)
+            }
+
             Button("Cancel") {
                 withAnimation(.snappy) {
                     selecting = false
                     selectedIds = []
                 }
             }
-            .font(PaperInk.sans(13, weight: .bold))
+            .font(PaperInk.sans(14, weight: .bold))
             .foregroundStyle(PaperInk.stone600)
-
-            Spacer()
-
-            Text("tap the ready ones to stack them")
-                .font(PaperInk.hand(17))
-                .foregroundStyle(PaperInk.brandDark)
-                .tilt(-1.5)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+        .background(PaperInk.paper)
+        .overlay(alignment: .top) { DashedDivider() }
     }
 
     private var tray: some View {

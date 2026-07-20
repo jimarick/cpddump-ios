@@ -47,10 +47,11 @@ final class TimelineModel {
 struct TimelineView: View {
     @Environment(Session.self) private var session
     @Bindable var model: TimelineModel
+    /// Owned by MainTabView so the tab bar can step aside while selecting.
+    @Binding var selecting: Bool
     /// Present the merge sheet for the chosen entries.
     var onMerge: (MergeSeed) -> Void
 
-    @State private var selecting = false
     @State private var selectedIds: Set<Int> = []
 
     var body: some View {
@@ -107,6 +108,8 @@ struct TimelineView: View {
         model.activities.filter { selectedIds.contains($0.id) && $0.merged == true }.count
     }
 
+    /// Stands in for the tab bar while selecting: Merge leading, Cancel
+    /// trailing, warnings in between.
     private var mergeBar: some View {
         HStack(spacing: 12) {
             Button("Merge \(selectedIds.count) into one") {
@@ -126,27 +129,37 @@ struct TimelineView: View {
             .buttonStyle(InkButtonStyle(prominent: true))
             .disabled(selectedIds.count < 2 || selectedMergedCount > 1)
 
-            Button("Cancel") {
-                withAnimation(.snappy) {
-                    selecting = false
-                    selectedIds = []
-                }
-            }
-            .font(PaperInk.sans(13, weight: .bold))
-            .foregroundStyle(PaperInk.stone600)
-
-            Spacer()
+            Spacer(minLength: 8)
 
             if selectedMergedCount > 1 {
                 Text("split one first")
                     .font(PaperInk.hand(17))
                     .foregroundStyle(.red)
                     .tilt(-1.5)
+            } else if selectedIds.count < 2 {
+                Text("tap entries to stack them")
+                    .font(PaperInk.hand(17))
+                    .foregroundStyle(PaperInk.brandDark)
+                    .tilt(-1.5)
+                    .lineLimit(2)
             }
+
+            Spacer(minLength: 8)
+
+            Button("Cancel") {
+                withAnimation(.snappy) {
+                    selecting = false
+                    selectedIds = []
+                }
+            }
+            .font(PaperInk.sans(14, weight: .bold))
+            .foregroundStyle(PaperInk.stone600)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
         .background(PaperInk.paper)
+        .overlay(alignment: .top) { DashedDivider() }
     }
 
     private var emptyState: some View {
