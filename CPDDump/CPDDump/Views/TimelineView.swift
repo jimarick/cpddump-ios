@@ -56,29 +56,24 @@ struct TimelineView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if model.activities.isEmpty && model.isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if model.activities.isEmpty {
-                    emptyState
-                } else {
-                    list
-                }
-            }
-            .background(PaperInk.paper)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    VStack(spacing: 0) {
-                        Text("Timeline").display(22)
-                        if let label = model.period?.label {
-                            Text(label)
-                                .font(PaperInk.sans(11, weight: .semibold))
-                                .foregroundStyle(PaperInk.stone500)
-                        }
+            VStack(spacing: 0) {
+                header
+
+                Group {
+                    if model.activities.isEmpty && model.isLoading {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if model.activities.isEmpty {
+                        emptyState
+                    } else {
+                        list
                     }
                 }
             }
+            .background(PaperInk.paper)
+            // The page draws its own header, exactly like the inbox — the
+            // system bar (and its glass chrome) only appears on pushed
+            // detail screens.
+            .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: ActivitySummary.self) { activity in
                 ActivityDetailView(activityId: activity.id) {
                     Task { await model.load(session, reset: true) }
@@ -89,6 +84,39 @@ struct TimelineView: View {
             }
         }
         .task { await model.load(session, reset: true) }
+    }
+
+    /// In-content header matching the inbox: big leading title, plain
+    /// Select/Done trailing on the same row.
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Timeline").display(32)
+                if let label = model.period?.label {
+                    Text(label)
+                        .font(PaperInk.sans(12, weight: .semibold))
+                        .foregroundStyle(PaperInk.stone500)
+                }
+            }
+
+            Spacer()
+
+            if !model.activities.isEmpty {
+                Button(selecting ? "Done" : "Select") {
+                    withAnimation(.snappy) {
+                        selecting.toggle()
+                        selectedIds = []
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(PaperInk.sans(13, weight: .bold))
+                .foregroundStyle(PaperInk.brandDark)
+                .padding(.top, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
     }
 
     /// At most one merged entry can join a stack — it becomes the target.
@@ -177,21 +205,6 @@ struct TimelineView: View {
             if !selecting, let stats = model.stats {
                 summaryPill(stats)
             }
-        }
-        // Plain text like the inbox's Select — outside the toolbar so the
-        // system never wraps it in glass chrome.
-        .overlay(alignment: .topTrailing) {
-            Button(selecting ? "Done" : "Select") {
-                withAnimation(.snappy) {
-                    selecting.toggle()
-                    selectedIds = []
-                }
-            }
-            .buttonStyle(.plain)
-            .font(PaperInk.sans(13, weight: .bold))
-            .foregroundStyle(PaperInk.brandDark)
-            .padding(.trailing, 18)
-            .padding(.top, 6)
         }
     }
 
