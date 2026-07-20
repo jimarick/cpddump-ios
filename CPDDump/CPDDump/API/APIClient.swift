@@ -82,6 +82,52 @@ struct APIClient {
         try await sendIgnoringBody("POST", "inbox-items/\(id)/retry")
     }
 
+    /// Purge stored files to stubs and scrub identifiers — lifts the PII gate.
+    func removePii(id: Int) async throws -> InboxItem {
+        struct Wrapper: Codable { var item: InboxItem }
+        let wrapper: Wrapper = try await send("POST", "inbox-items/\(id)/remove-pii")
+        return wrapper.item
+    }
+
+    // MARK: Merging
+
+    func mergeCandidates(periodId: Int? = nil) async throws -> MergeCandidates {
+        var query: [URLQueryItem] = []
+        if let periodId { query.append(URLQueryItem(name: "period_id", value: String(periodId))) }
+        return try await send("GET", "merges/candidates", query: query)
+    }
+
+    func mergePreview(seed: MergeSeed) async throws -> MergePreview {
+        try await send("POST", "merges/preview", body: try Self.encoder.encode(seed))
+    }
+
+    /// AI-combined reflections for the merge sheet — costs tokens, on demand.
+    func mergeReflection(seed: MergeSeed) async throws -> [String: String] {
+        struct Wrapper: Codable { var reflection: [String: String] }
+        let wrapper: Wrapper = try await send("POST", "merges/reflection", body: try Self.encoder.encode(seed))
+        return wrapper.reflection
+    }
+
+    /// Returns the merged activity's id.
+    func merge(payload: MergePayload) async throws -> Int {
+        struct Wrapper: Codable {
+            var activityId: Int
+            enum CodingKeys: String, CodingKey { case activityId = "activity_id" }
+        }
+        let wrapper: Wrapper = try await send("POST", "merges", body: try Self.encoder.encode(payload))
+        return wrapper.activityId
+    }
+
+    /// Splits a merged entry; returns the released activity ids.
+    func unmerge(activityId: Int) async throws -> [Int] {
+        struct Wrapper: Codable {
+            var activityIds: [Int]
+            enum CodingKeys: String, CodingKey { case activityIds = "activity_ids" }
+        }
+        let wrapper: Wrapper = try await send("POST", "activities/\(activityId)/unmerge")
+        return wrapper.activityIds
+    }
+
     // MARK: Timeline
 
     func activities(page: Int = 1, periodId: Int? = nil) async throws -> ActivitiesPage {
@@ -93,6 +139,12 @@ struct APIClient {
     func activity(id: Int) async throws -> ActivityDetail {
         struct Wrapper: Codable { var activity: ActivityDetail }
         let wrapper: Wrapper = try await send("GET", "activities/\(id)")
+        return wrapper.activity
+    }
+
+    func updateActivity(id: Int, payload: UpdateActivityPayload) async throws -> ActivityDetail {
+        struct Wrapper: Codable { var activity: ActivityDetail }
+        let wrapper: Wrapper = try await send("PUT", "activities/\(id)", body: try Self.encoder.encode(payload))
         return wrapper.activity
     }
 

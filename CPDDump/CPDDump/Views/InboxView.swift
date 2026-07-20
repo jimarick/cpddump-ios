@@ -50,9 +50,13 @@ struct InboxView: View {
     @Environment(Session.self) private var session
     @Bindable var model: InboxModel
     var onReview: (InboxItem) -> Void
+    /// Present the merge sheet for the selected Ready item ids.
+    var onMerge: ([Int]) -> Void
     @State private var doodleCeiling: CGFloat = 0
     @State private var binCandidate: InboxItem?
     @State private var discardCandidate: UploadQueue.Pending?
+    @State private var selecting = false
+    @State private var selectedIds: Set<Int> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,7 +86,11 @@ struct InboxView: View {
             }
             .padding(.horizontal, 14)
 
-            statsLine
+            if selecting {
+                mergeBar
+            } else {
+                statsLine
+            }
         }
         .background(PaperInk.paper)
         .task {
@@ -132,17 +140,67 @@ struct InboxView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Inbox").display(32)
-            if let since = model.stats?.period?.startsOn {
-                Text("since \(Self.longDate(since))")
-                    .font(PaperInk.sans(12, weight: .semibold))
-                    .foregroundStyle(PaperInk.stone500)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Inbox").display(32)
+                if let since = model.stats?.period?.startsOn {
+                    Text("since \(Self.longDate(since))")
+                        .font(PaperInk.sans(12, weight: .semibold))
+                        .foregroundStyle(PaperInk.stone500)
+                }
+            }
+
+            Spacer()
+
+            // Selection mode = the app's answer to the web's drag-to-stack.
+            if model.items.contains(where: { $0.status == .ready }) {
+                Button(selecting ? "Done" : "Select") {
+                    withAnimation(.snappy) {
+                        selecting.toggle()
+                        selectedIds = []
+                    }
+                }
+                .font(PaperInk.sans(13, weight: .bold))
+                .foregroundStyle(PaperInk.brandDark)
+                .padding(.top, 8)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
         .padding(.top, 8)
+    }
+
+    private var mergeBar: some View {
+        HStack(spacing: 12) {
+            Button("Merge \(selectedIds.count) into one") {
+                let ids = Array(selectedIds)
+                withAnimation(.snappy) {
+                    selecting = false
+                    selectedIds = []
+                }
+                onMerge(ids)
+            }
+            .buttonStyle(InkButtonStyle(prominent: true))
+            .disabled(selectedIds.count < 2)
+
+            Button("Cancel") {
+                withAnimation(.snappy) {
+                    selecting = false
+                    selectedIds = []
+                }
+            }
+            .font(PaperInk.sans(13, weight: .bold))
+            .foregroundStyle(PaperInk.stone600)
+
+            Spacer()
+
+            Text("tap the ready ones to stack them")
+                .font(PaperInk.hand(17))
+                .foregroundStyle(PaperInk.brandDark)
+                .tilt(-1.5)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     private var tray: some View {
@@ -243,7 +301,18 @@ struct InboxView: View {
     }
 
     private func row(_ item: InboxItem) -> some View {
-        HStack(spacing: 8) {
+        let selectable = item.status == .ready
+        let selected = selectedIds.contains(item.id)
+        let related = (item.aiWarnings?.possibleRelatedInboxItemIds ?? [])
+            + (item.aiWarnings?.possibleDuplicateInboxItemIds ?? [])
+
+        let card = HStack(spacing: 8) {
+            if selecting {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(selectable ? PaperInk.brand : PaperInk.stone400.opacity(0.4))
+            }
+
             Image(systemName: item.sourceSymbol)
                 .font(.system(size: 13))
                 .foregroundStyle(PaperInk.stone400)
@@ -264,6 +333,12 @@ struct InboxView: View {
                 Spacer(minLength: 0)
             }
 
+            if !related.isEmpty {
+                Image(systemName: "link")
+                    .font(.system(size: 11))
+                    .foregroundStyle(PaperInk.brand)
+            }
+
             if !item.attachments.isEmpty {
                 Image(systemName: "paperclip")
                     .font(.system(size: 11))
@@ -271,7 +346,7 @@ struct InboxView: View {
             }
 
             switch item.status {
-            case .ready: Pill(text: "Review")
+            case .ready: Pill(text: selecting ? (selected ? "Stacked" : "Stack") : "Review")
             case .failed: Chip(text: "Failed", background: .red.opacity(0.12), foreground: .red)
             default: EmptyView()
             }
@@ -280,26 +355,52 @@ struct InboxView: View {
         .padding(.vertical, 10)
         .background(.white)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(PaperInk.ink, lineWidth: 2))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(selected ? PaperInk.brand : PaperInk.ink, lineWidth: 2)
+        )
         .stickerShadow()
         .rowTilt(seed: item.id)
+        .opacity(selecting && !selectable ? 0.45 : 1)
         .contentShape(Rectangle())
         .onTapGesture {
-            if item.status == .ready { onReview(item) }
-        }
-        .contextMenu {
-            if item.status == .ready {
-                Button("Review") { onReview(item) }
+            if selecting {
+                if selectable { toggleSelection(item.id) }
+            } else if item.status == .ready {
+                onReview(item)
             }
-            if item.status == .failed {
-                Button("Try again") { Task { await model.retry(item, session) } }
-            }
-            Button("Bin it", role: .destructive) { binCandidate = item }
         }
-        .swipeReveal(
-            onReview: item.status == .ready ? { onReview(item) } : nil,
-            onBin: { binCandidate = item }
-        )
+
+        return Group {
+            if selecting {
+                card
+            } else {
+                card
+                    .contextMenu {
+                        if item.status == .ready {
+                            Button("Review") { onReview(item) }
+                            Button("Merge with…") {
+                                withAnimation(.snappy) {
+                                    selecting = true
+                                    selectedIds = [item.id]
+                                }
+                            }
+                        }
+                        if item.status == .failed {
+                            Button("Try again") { Task { await model.retry(item, session) } }
+                        }
+                        Button("Bin it", role: .destructive) { binCandidate = item }
+                    }
+                    .swipeReveal(
+                        onReview: item.status == .ready ? { onReview(item) } : nil,
+                        onBin: { binCandidate = item }
+                    )
+            }
+        }
+    }
+
+    private func toggleSelection(_ id: Int) {
+        if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
     }
 
     private var statsLine: some View {

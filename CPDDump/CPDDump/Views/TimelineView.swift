@@ -39,10 +39,16 @@ final class TimelineModel {
     }
 }
 
-/// Read-only scroll of approved activities. Editing stays on the web.
+/// Scroll of approved activities. Since the merge feature, entries can be
+/// combined (Select → Merge), split apart, and edited right here.
 struct TimelineView: View {
     @Environment(Session.self) private var session
     @Bindable var model: TimelineModel
+    /// Present the merge sheet for the chosen entries.
+    var onMerge: (MergeSeed) -> Void
+
+    @State private var selecting = false
+    @State private var selectedIds: Set<Int> = []
 
     var body: some View {
         NavigationStack {
@@ -68,12 +74,76 @@ struct TimelineView: View {
                         }
                     }
                 }
+                if !model.activities.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(selecting ? "Done" : "Select") {
+                            withAnimation(.snappy) {
+                                selecting.toggle()
+                                selectedIds = []
+                            }
+                        }
+                        .font(PaperInk.sans(13, weight: .bold))
+                        .foregroundStyle(PaperInk.brandDark)
+                    }
+                }
             }
             .navigationDestination(for: ActivitySummary.self) { activity in
-                ActivityDetailView(activityId: activity.id)
+                ActivityDetailView(activityId: activity.id) {
+                    Task { await model.load(session, reset: true) }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if selecting { mergeBar }
             }
         }
         .task { await model.load(session, reset: true) }
+    }
+
+    /// At most one merged entry can join a stack — it becomes the target.
+    private var selectedMergedCount: Int {
+        model.activities.filter { selectedIds.contains($0.id) && $0.merged == true }.count
+    }
+
+    private var mergeBar: some View {
+        HStack(spacing: 12) {
+            Button("Merge \(selectedIds.count) into one") {
+                let selected = model.activities.filter { selectedIds.contains($0.id) }
+                let target = selected.first { $0.merged == true }
+
+                withAnimation(.snappy) {
+                    selecting = false
+                    selectedIds = []
+                }
+                onMerge(MergeSeed(
+                    activityIds: selected.filter { $0.id != target?.id }.map(\.id),
+                    inboxItemIds: [],
+                    intoActivityId: target?.id
+                ))
+            }
+            .buttonStyle(InkButtonStyle(prominent: true))
+            .disabled(selectedIds.count < 2 || selectedMergedCount > 1)
+
+            Button("Cancel") {
+                withAnimation(.snappy) {
+                    selecting = false
+                    selectedIds = []
+                }
+            }
+            .font(PaperInk.sans(13, weight: .bold))
+            .foregroundStyle(PaperInk.stone600)
+
+            Spacer()
+
+            if selectedMergedCount > 1 {
+                Text("split one first")
+                    .font(PaperInk.hand(17))
+                    .foregroundStyle(.red)
+                    .tilt(-1.5)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(PaperInk.paper)
     }
 
     private var emptyState: some View {
@@ -91,11 +161,20 @@ struct TimelineView: View {
         ScrollView {
             LazyVStack(spacing: 10) {
                 ForEach(model.activities) { activity in
-                    NavigationLink(value: activity) {
-                        row(activity)
+                    if selecting {
+                        Button {
+                            toggleSelection(activity.id)
+                        } label: {
+                            row(activity)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        NavigationLink(value: activity) {
+                            row(activity)
+                        }
+                        .buttonStyle(.plain)
+                        .task { await model.loadMoreIfNeeded(session, current: activity) }
                     }
-                    .buttonStyle(.plain)
-                    .task { await model.loadMoreIfNeeded(session, current: activity) }
                 }
             }
             .padding(14)
@@ -103,8 +182,20 @@ struct TimelineView: View {
         .refreshable { await model.load(session, reset: true) }
     }
 
+    private func toggleSelection(_ id: Int) {
+        if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
+    }
+
     private func row(_ activity: ActivitySummary) -> some View {
-        HStack(spacing: 10) {
+        let selected = selectedIds.contains(activity.id)
+
+        return HStack(spacing: 10) {
+            if selecting {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(PaperInk.brand)
+            }
+
             RoundedRectangle(cornerRadius: 3)
                 .fill(typeColor(activity.type))
                 .frame(width: 6)
@@ -115,6 +206,11 @@ struct TimelineView: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 HStack(spacing: 6) {
+                    if activity.merged == true {
+                        Image(systemName: "square.stack")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(PaperInk.brandDark)
+                    }
                     if let date = activity.startsOn {
                         Text(Self.shortDate(date))
                     }
@@ -142,7 +238,10 @@ struct TimelineView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.white)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(PaperInk.ink, lineWidth: 2))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(selected ? PaperInk.brand : PaperInk.ink, lineWidth: 2)
+        )
         .stickerShadow()
         .rowTilt(seed: activity.id)
     }
@@ -171,16 +270,32 @@ func typeColor(_ type: ActivityTypeRef) -> Color {
 
 struct ActivityDetailView: View {
     @Environment(Session.self) private var session
+    @Environment(\.dismiss) private var dismiss
 
     let activityId: Int
+    /// Called after a split or edit so the timeline list refreshes.
+    var onChanged: (() -> Void)?
     @State private var activity: ActivityDetail?
     @State private var errorMessage: String?
+    @State private var confirmingSplit = false
+    @State private var editing = false
+    @State private var isWorking = false
 
     var body: some View {
         ScrollView {
             if let activity {
                 VStack(alignment: .leading, spacing: 16) {
                     header(activity)
+
+                    if !activity.mergedFrom.isEmpty {
+                        mergedFromBox(activity)
+                    } else if activity.formerlyMerged == true {
+                        Text(activity.mergeUnreviewed == true
+                            ? "This entry was created from the AI analysis during a merge and later split back out — give its details a once-over."
+                            : "This entry was previously part of a merged entry.")
+                            .font(PaperInk.sans(12))
+                            .foregroundStyle(PaperInk.stone500)
+                    }
 
                     if let details = activity.details, !details.isEmpty {
                         section("Summary") { Text(details).font(PaperInk.sans(14)) }
@@ -224,7 +339,7 @@ struct ActivityDetailView: View {
                         }
                     }
 
-                    Text("editing lives on the web — this is your paper trail")
+                    Text("your paper trail — tidy it whenever you like")
                         .font(PaperInk.hand(19))
                         .foregroundStyle(PaperInk.brandDark)
                         .tilt(-1.5)
@@ -242,6 +357,35 @@ struct ActivityDetailView: View {
             }
         }
         .background(PaperInk.paper)
+        .toolbar {
+            if activity != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") { editing = true }
+                        .font(PaperInk.sans(13, weight: .bold))
+                        .foregroundStyle(PaperInk.brandDark)
+                }
+            }
+        }
+        .sheet(isPresented: $editing) {
+            if let activity {
+                ActivityEditView(activity: activity) { updated in
+                    self.activity = updated
+                    onChanged?()
+                }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+            }
+        }
+        .confirmationDialog(
+            "Split “\(activity?.title ?? "this")” back into \(activity?.mergedFrom.count ?? 0) activities?",
+            isPresented: $confirmingSplit,
+            titleVisibility: .visible
+        ) {
+            Button("Split it") { split() }
+            Button("Keep merged", role: .cancel) {}
+        } message: {
+            Text("The originals come back exactly as they were — their own points, dates and files. Nothing is deleted.")
+        }
         .task {
             do {
                 activity = try await session.api.activity(id: activityId)
@@ -251,6 +395,50 @@ struct ActivityDetailView: View {
             } catch where !error.isCancellation {
                 errorMessage = error.localizedDescription
             } catch {}
+        }
+    }
+
+    private func mergedFromBox(_ activity: ActivityDetail) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "square.stack")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(PaperInk.stone500)
+                Text("Merged from \(activity.mergedFrom.count) entries")
+                    .font(PaperInk.sans(12, weight: .heavy))
+                    .foregroundStyle(PaperInk.stone600)
+            }
+
+            ForEach(activity.mergedFrom) { source in
+                Text("· \(source.title)\(source.startsOn.map { " — \(TimelineView.shortDate($0))" } ?? "")")
+                    .font(PaperInk.sans(12))
+                    .foregroundStyle(PaperInk.stone500)
+            }
+
+            Button(isWorking ? "Splitting…" : "Split apart…") { confirmingSplit = true }
+                .font(PaperInk.sans(12, weight: .bold))
+                .foregroundStyle(PaperInk.brandDark)
+                .disabled(isWorking)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(PaperInk.stone400, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+        )
+    }
+
+    private func split() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                _ = try await session.api.unmerge(activityId: activityId)
+                onChanged?()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

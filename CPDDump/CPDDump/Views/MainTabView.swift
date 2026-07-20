@@ -12,6 +12,7 @@ struct MainTabView: View {
     @State private var inboxModel = InboxModel()
     @State private var timelineModel = TimelineModel()
     @State private var reviewItem: InboxItem?
+    @State private var mergeSeed: MergeSeed?
     @State private var showRecorder = false
     @State private var showDumpSheet = false
 
@@ -22,11 +23,17 @@ struct MainTabView: View {
             Group {
                 switch tab {
                 case .inbox:
-                    InboxView(model: inboxModel) { item in
-                        openReview(item)
-                    }
+                    InboxView(
+                        model: inboxModel,
+                        onReview: { item in openReview(item) },
+                        onMerge: { itemIds in
+                            mergeSeed = MergeSeed(inboxItemIds: itemIds)
+                        }
+                    )
                 case .timeline:
-                    TimelineView(model: timelineModel)
+                    TimelineView(model: timelineModel) { seed in
+                        mergeSeed = seed
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -35,8 +42,25 @@ struct MainTabView: View {
         }
         .background(PaperInk.paper)
         .sheet(item: $reviewItem) { item in
-            ReviewSheetView(item: item) {
-                Task { await inboxModel.refresh(session) }
+            ReviewSheetView(
+                item: item,
+                onResolved: {
+                    Task { await inboxModel.refresh(session) }
+                },
+                onMergeInstead: { seed in
+                    reviewItem = nil
+                    mergeSeed = seed
+                }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.hidden)
+        }
+        .sheet(item: $mergeSeed) { seed in
+            MergeSheetView(initialSeed: seed) {
+                Task {
+                    await inboxModel.refresh(session)
+                    await timelineModel.load(session, reset: true)
+                }
             }
             .presentationDetents([.large])
             .presentationDragIndicator(.hidden)

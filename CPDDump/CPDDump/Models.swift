@@ -86,6 +86,8 @@ struct InboxItem: Codable, Identifiable {
     /// Server gate: flagged patient info still held in a file or typed text.
     /// Approval then requires an explicit acknowledgement (`pii_ack`).
     var piiGate: Bool?
+    /// Titled, current-period matches worth merging into — never enforced.
+    var mergeSuggestions: [MergeSuggestion]?
 
     enum CodingKeys: String, CodingKey {
         case id, source, status, attachments
@@ -96,6 +98,7 @@ struct InboxItem: Codable, Identifiable {
         case failureReason = "failure_reason"
         case createdAt = "created_at"
         case piiGate = "pii_gate"
+        case mergeSuggestions = "merge_suggestions"
     }
 
     // Lenient decoding: PHP encodes empty maps as JSON arrays ([] not {}),
@@ -114,6 +117,7 @@ struct InboxItem: Codable, Identifiable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         attachments = (try? container.decode([AttachmentRef].self, forKey: .attachments)) ?? []
         piiGate = try? container.decode(Bool.self, forKey: .piiGate)
+        mergeSuggestions = try? container.decode([MergeSuggestion].self, forKey: .mergeSuggestions)
     }
 
     /// Best display title for a tray row.
@@ -146,11 +150,25 @@ struct AttachmentRef: Codable, Identifiable {
     /// Absent when the file has been purged from storage.
     var url: String?
     var purged: Bool?
+    /// On a merged entry: which absorbed source this file belongs to.
+    var from: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, url, purged
+        case id, name, url, purged, from
         case mimeType = "mime_type"
     }
+}
+
+/// A titled match the server thinks could merge with an inbox item.
+struct MergeSuggestion: Codable, Identifiable, Hashable {
+    /// "activity" (on the timeline) or "inbox" (another waiting item).
+    var kind: String
+    var id: Int
+    var title: String
+    /// The suggested activity is itself a merged entry (absorb into it).
+    var merged: Bool?
+    /// "recurrence" | "duplicate" | "related".
+    var reason: String?
 }
 
 /// The InboxAnalystAgent's extraction — every field optional so a partial
@@ -235,12 +253,18 @@ struct AiWarnings: Codable {
     var missingEvidence: [String]?
     var possibleDuplicateActivityIds: [Int]?
     var possibleDuplicateInboxItemIds: [Int]?
+    var possibleRelatedInboxItemIds: [Int]?
+    var possibleRelatedActivityIds: [Int]?
+    var relatedReason: String?
 
     enum CodingKeys: String, CodingKey {
         case piiFlags = "pii_flags"
         case missingEvidence = "missing_evidence"
         case possibleDuplicateActivityIds = "possible_duplicate_activity_ids"
         case possibleDuplicateInboxItemIds = "possible_duplicate_inbox_item_ids"
+        case possibleRelatedInboxItemIds = "possible_related_inbox_item_ids"
+        case possibleRelatedActivityIds = "possible_related_activity_ids"
+        case relatedReason = "related_reason"
     }
 }
 
@@ -256,9 +280,11 @@ struct ActivitySummary: Codable, Identifiable, Hashable {
     var type: ActivityTypeRef
     var domains: [String]
     var projects: [String]
+    /// This entry is a merged combination hiding its sources underneath.
+    var merged: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, organisation, type, domains, projects
+        case id, title, organisation, type, domains, projects, merged
         case startsOn = "starts_on"
         case endsOn = "ends_on"
         case cpdPoints = "cpd_points"
@@ -279,12 +305,21 @@ struct ActivityDetail: Codable, Identifiable {
     var domains: [CodeName]
     var projects: [ProjectRef]
     var attachments: [AttachmentRef]
+    /// Non-empty when this is a merged entry hiding absorbed sources.
+    var mergedFrom: [MergedSource]
+    /// Was once inside a merged entry, later split back out.
+    var formerlyMerged: Bool?
+    /// Promoted straight from the inbox during a merge — never individually reviewed.
+    var mergeUnreviewed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, title, organisation, details, reflection, type, categories, domains, projects, attachments
         case startsOn = "starts_on"
         case endsOn = "ends_on"
         case cpdPoints = "cpd_points"
+        case mergedFrom = "merged_from"
+        case formerlyMerged = "formerly_merged"
+        case mergeUnreviewed = "merge_unreviewed"
     }
 
     init(from decoder: Decoder) throws {
@@ -302,6 +337,23 @@ struct ActivityDetail: Codable, Identifiable {
         domains = (try? container.decode([CodeName].self, forKey: .domains)) ?? []
         projects = (try? container.decode([ProjectRef].self, forKey: .projects)) ?? []
         attachments = (try? container.decode([AttachmentRef].self, forKey: .attachments)) ?? []
+        mergedFrom = (try? container.decode([MergedSource].self, forKey: .mergedFrom)) ?? []
+        formerlyMerged = try? container.decode(Bool.self, forKey: .formerlyMerged)
+        mergeUnreviewed = try? container.decode(Bool.self, forKey: .mergeUnreviewed)
+    }
+}
+
+/// One absorbed source shown under a merged entry.
+struct MergedSource: Codable, Identifiable, Hashable {
+    var id: Int
+    var title: String
+    var startsOn: String?
+    var cpdPoints: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title
+        case startsOn = "starts_on"
+        case cpdPoints = "cpd_points"
     }
 }
 
@@ -439,6 +491,247 @@ struct ApprovePayload: Codable {
         case linkedActivityIds = "linked_activity_ids"
         case keepAttachmentIds = "keep_attachment_ids"
         case piiAck = "pii_ack"
+    }
+}
+
+// MARK: - Merging
+
+/// Which things are being combined — the seed for preview/reflection/merge.
+struct MergeSeed: Codable, Equatable, Identifiable {
+    var activityIds: [Int] = []
+    var inboxItemIds: [Int] = []
+    var intoActivityId: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case activityIds = "activity_ids"
+        case inboxItemIds = "inbox_item_ids"
+        case intoActivityId = "into_activity_id"
+    }
+
+    var id: String {
+        "a:\(activityIds.map(String.init).joined(separator: ","))|i:\(inboxItemIds.map(String.init).joined(separator: ","))|t:\(intoActivityId.map(String.init) ?? "-")"
+    }
+}
+
+/// Server-computed merge-modal seed: combined defaults, source summaries,
+/// and which items' PII gates still block.
+struct MergePreview: Codable {
+    var defaults: Defaults
+    var sources: [Source]
+    var blocking: Blocking
+    /// "ask" | "always" | "never" — only "ask" shows keep-file choices.
+    var retention: String?
+
+    struct Defaults: Codable {
+        var title: String?
+        var activityTypeSlug: String?
+        var startsOn: String?
+        var endsOn: String?
+        var cpdPoints: Double?
+        var pointsBreakdown: [Double]?
+        var organisation: String?
+        var details: String?
+        var reflection: [String: String]?
+        var categorySlugs: [String]?
+        var domainCodes: [String]?
+        var attributeCodes: [String]?
+        var projectIds: [Int]?
+
+        enum CodingKeys: String, CodingKey {
+            case title, organisation, details, reflection
+            case activityTypeSlug = "activity_type_slug"
+            case startsOn = "starts_on"
+            case endsOn = "ends_on"
+            case cpdPoints = "cpd_points"
+            case pointsBreakdown = "points_breakdown"
+            case categorySlugs = "category_slugs"
+            case domainCodes = "domain_codes"
+            case attributeCodes = "attribute_codes"
+            case projectIds = "project_ids"
+        }
+    }
+
+    struct Source: Codable, Identifiable {
+        /// "activity" | "inbox_item".
+        var kind: String
+        var id: Int
+        var title: String
+        var startsOn: String?
+        var cpdPoints: Double?
+        var source: String?
+        var piiGate: Bool?
+        var isTarget: Bool?
+        var piiFlags: [PiiTypeSeverity]?
+        var attachments: [SourceAttachment]
+
+        enum CodingKeys: String, CodingKey {
+            case kind, id, title, source, attachments
+            case startsOn = "starts_on"
+            case cpdPoints = "cpd_points"
+            case piiGate = "pii_gate"
+            case isTarget = "is_target"
+            case piiFlags = "pii_flags"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try container.decode(String.self, forKey: .kind)
+            id = try container.decode(Int.self, forKey: .id)
+            title = try container.decode(String.self, forKey: .title)
+            startsOn = try? container.decode(String.self, forKey: .startsOn)
+            cpdPoints = try? container.decode(Double.self, forKey: .cpdPoints)
+            source = try? container.decode(String.self, forKey: .source)
+            piiGate = try? container.decode(Bool.self, forKey: .piiGate)
+            isTarget = try? container.decode(Bool.self, forKey: .isTarget)
+            piiFlags = try? container.decode([PiiTypeSeverity].self, forKey: .piiFlags)
+            attachments = (try? container.decode([SourceAttachment].self, forKey: .attachments)) ?? []
+        }
+
+        struct PiiTypeSeverity: Codable {
+            var type: String
+            var severity: String?
+        }
+
+        struct SourceAttachment: Codable, Identifiable {
+            var id: Int
+            var name: String?
+            var purged: Bool?
+            /// Only inbox items' surviving files get a keep/don't-keep choice.
+            var keepable: Bool?
+        }
+    }
+
+    struct Blocking: Codable {
+        var piiItemIds: [Int]
+
+        enum CodingKeys: String, CodingKey {
+            case piiItemIds = "pii_item_ids"
+        }
+    }
+}
+
+/// What the "Merge with…" picker can offer.
+struct MergeCandidates: Codable {
+    var activities: [ActivityCandidate]
+    var inboxItems: [InboxCandidate]
+
+    enum CodingKeys: String, CodingKey {
+        case activities
+        case inboxItems = "inbox_items"
+    }
+
+    struct ActivityCandidate: Codable, Identifiable, Hashable {
+        var id: Int
+        var title: String
+        var startsOn: String?
+        var cpdPoints: Double?
+        var merged: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, merged
+            case startsOn = "starts_on"
+            case cpdPoints = "cpd_points"
+        }
+    }
+
+    struct InboxCandidate: Codable, Identifiable, Hashable {
+        var id: Int
+        var title: String
+        var startsOn: String?
+        var cpdPoints: Double?
+        var sourceLabel: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title
+            case startsOn = "starts_on"
+            case cpdPoints = "cpd_points"
+            case sourceLabel = "source_label"
+        }
+    }
+}
+
+/// The combined entry sent to POST merges — seed + the edited fields.
+struct MergePayload: Encodable {
+    var seed: MergeSeed
+    var title: String
+    var activityTypeSlug: String
+    var startsOn: String?
+    var endsOn: String?
+    var organisation: String?
+    var cpdPoints: Double
+    var details: String?
+    var reflection: [String: String]?
+    var categorySlugs: [String]?
+    var domainCodes: [String]?
+    var attributeCodes: [String]?
+    var projectIds: [Int]?
+    var keepAttachmentIds: [Int]?
+    var piiAcks: [Int]?
+
+    enum CodingKeys: String, CodingKey {
+        case title, organisation, details, reflection
+        case activityIds = "activity_ids"
+        case inboxItemIds = "inbox_item_ids"
+        case intoActivityId = "into_activity_id"
+        case activityTypeSlug = "activity_type_slug"
+        case startsOn = "starts_on"
+        case endsOn = "ends_on"
+        case cpdPoints = "cpd_points"
+        case categorySlugs = "category_slugs"
+        case domainCodes = "domain_codes"
+        case attributeCodes = "attribute_codes"
+        case projectIds = "project_ids"
+        case keepAttachmentIds = "keep_attachment_ids"
+        case piiAcks = "pii_acks"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(seed.activityIds, forKey: .activityIds)
+        try container.encode(seed.inboxItemIds, forKey: .inboxItemIds)
+        try container.encodeIfPresent(seed.intoActivityId, forKey: .intoActivityId)
+        try container.encode(title, forKey: .title)
+        try container.encode(activityTypeSlug, forKey: .activityTypeSlug)
+        try container.encodeIfPresent(startsOn, forKey: .startsOn)
+        try container.encodeIfPresent(endsOn, forKey: .endsOn)
+        try container.encodeIfPresent(organisation, forKey: .organisation)
+        try container.encode(cpdPoints, forKey: .cpdPoints)
+        try container.encodeIfPresent(details, forKey: .details)
+        try container.encodeIfPresent(reflection, forKey: .reflection)
+        try container.encodeIfPresent(categorySlugs, forKey: .categorySlugs)
+        try container.encodeIfPresent(domainCodes, forKey: .domainCodes)
+        try container.encodeIfPresent(attributeCodes, forKey: .attributeCodes)
+        try container.encodeIfPresent(projectIds, forKey: .projectIds)
+        try container.encodeIfPresent(keepAttachmentIds, forKey: .keepAttachmentIds)
+        try container.encodeIfPresent(piiAcks, forKey: .piiAcks)
+    }
+}
+
+/// The editable activity fields sent to PUT activities/{id}.
+struct UpdateActivityPayload: Encodable {
+    var title: String
+    var activityTypeSlug: String
+    var startsOn: String?
+    var endsOn: String?
+    var organisation: String?
+    var cpdPoints: Double
+    var details: String?
+    var reflection: [String: String]?
+    var categorySlugs: [String]?
+    var domainCodes: [String]?
+    var attributeCodes: [String]?
+    var projectIds: [Int]?
+
+    enum CodingKeys: String, CodingKey {
+        case title, organisation, details, reflection
+        case activityTypeSlug = "activity_type_slug"
+        case startsOn = "starts_on"
+        case endsOn = "ends_on"
+        case cpdPoints = "cpd_points"
+        case categorySlugs = "category_slugs"
+        case domainCodes = "domain_codes"
+        case attributeCodes = "attribute_codes"
+        case projectIds = "project_ids"
     }
 }
 

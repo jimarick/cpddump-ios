@@ -8,6 +8,8 @@ struct ReviewSheetView: View {
 
     let item: InboxItem
     var onResolved: () -> Void
+    /// Present the merge sheet seeded with this item + its suggested matches.
+    var onMergeInstead: ((MergeSeed) -> Void)?
 
     enum Step: Int, CaseIterable {
         case details, reflection, categorise
@@ -126,6 +128,10 @@ struct ReviewSheetView: View {
 
     private var detailsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if let suggestions = item.mergeSuggestions, !suggestions.isEmpty, onMergeInstead != nil {
+                mergeSuggestionBox(suggestions)
+            }
+
             labelled("What was it?") {
                 TextField("Title", text: $title, axis: .vertical)
             }
@@ -191,6 +197,53 @@ struct ReviewSheetView: View {
 
             sparkline("Drafted from your \(item.sourceLabel.lowercased()) — edit anything.")
         }
+    }
+
+    /// "Looks like something you already have" — accepting jumps straight to
+    /// the merge sheet, where the existing entry's reflection is pre-filled
+    /// and the user reflects once, on the combined whole. Ignorable; it
+    /// simply appears again next time a match exists.
+    private func mergeSuggestionBox(_ suggestions: [MergeSuggestion]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 5) {
+                Sparkle(size: 13)
+                Text("Looks like something you already have")
+                    .font(PaperInk.sans(13, weight: .heavy))
+                    .foregroundStyle(PaperInk.brandDark)
+            }
+
+            ForEach(suggestions) { suggestion in
+                Text("“\(suggestion.title)” \(suggestion.kind == "activity" ? "(on your timeline)" : "(in your inbox)")")
+                    .font(PaperInk.sans(12))
+                    .foregroundStyle(PaperInk.stone600)
+            }
+
+            Text("Merging means you reflect once, on the combined entry — any existing reflection comes with it.")
+                .font(PaperInk.sans(11))
+                .foregroundStyle(PaperInk.stone500)
+
+            Button("Merge into \(suggestions.count == 1 ? "it" : "these") instead…") {
+                let activities = suggestions.filter { $0.kind == "activity" }
+                let target = activities.first { $0.merged == true }
+
+                onMergeInstead?(MergeSeed(
+                    activityIds: activities.filter { $0.id != target?.id }.map(\.id),
+                    inboxItemIds: [item.id] + suggestions.filter { $0.kind == "inbox" }.map(\.id),
+                    intoActivityId: target?.id
+                ))
+                dismiss()
+            }
+            .font(PaperInk.sans(13, weight: .bold))
+            .foregroundStyle(PaperInk.brandDark)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PaperInk.tint.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(PaperInk.brand.opacity(0.6), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+        )
     }
 
     /// The approval gate for flagged patient information. Removing the info
