@@ -1,19 +1,46 @@
 import SwiftUI
 import AVFoundation
 
-/// Step 2 of the review wizard: one editable answer per profession prompt,
-/// each with dictation (mic → /ai/transcribe) and the ✦ sparkle button
-/// (→ /ai/text-assist), mirroring the web.
+/// Cross-step state for the talk-first reflection capture. Owned by the
+/// presenting sheet (which outlives step switches), never by the step
+/// itself — a dictated ramble must survive leaving and revisiting the step.
+struct ReflectionTalkState {
+    var ramble = ""
+    /// True once the per-prompt boxes have been shown — the capture box
+    /// never comes back mid-edit after that.
+    var dismissed = false
+    /// True once the ramble has been AI-shaped into the boxes.
+    var shaped = false
+}
+
+/// Step 2 of the review wizard, mirroring the web. Talk-first when every
+/// answer is empty: one capture box, the profession's questions stated up
+/// front, a big mic, and "shape into reflections" (→ /ai/reflection-draft).
+/// Otherwise one editable answer per prompt, each with dictation
+/// (mic → /ai/transcribe) and the ✦ sparkle button (→ /ai/text-assist).
 struct ReflectionStepView: View {
     @Environment(Session.self) private var session
 
     var prompts: [Reference.ReflectionPrompt]
     @Binding var answers: [String: String]
     var assistContext: String
+    @Binding var talk: ReflectionTalkState
+    /// The analyst's note on where a pre-filled reflection came from.
+    var reflectionSource: String?
 
     @State private var busyKey: String?
     @State private var recorder = DictationRecorder()
     @State private var errorMessage: String?
+    @State private var typing = false
+    @State private var shaping = false
+
+    private var allEmpty: Bool {
+        prompts.allSatisfy { (answers[$0.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var talkMode: Bool {
+        !talk.dismissed && !prompts.isEmpty && allEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -23,14 +50,230 @@ struct ReflectionStepView: View {
                     .foregroundStyle(PaperInk.stone500)
             }
 
-            ForEach(prompts) { prompt in
-                promptField(prompt)
+            if talkMode {
+                talkFirstCapture
+            } else {
+                boxesContent
             }
 
             if let errorMessage {
                 Text(errorMessage)
                     .font(PaperInk.sans(12, weight: .semibold))
                     .foregroundStyle(.red)
+            }
+        }
+    }
+
+    // MARK: Talk-first capture
+
+    private var talkFirstCapture: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FieldLabel(text: "Reflection")
+            Text("Talk it through.")
+                .font(PaperInk.display(24))
+                .foregroundStyle(PaperInk.ink)
+
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(prompts.enumerated()), id: \.element.key) { index, prompt in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(index + 1)")
+                            .font(PaperInk.display(14))
+                            .foregroundStyle(PaperInk.brand)
+                        Text(prompt.label)
+                            .font(PaperInk.sans(14))
+                            .foregroundStyle(PaperInk.stone600)
+                    }
+                }
+            }
+
+            if talk.ramble.isEmpty && !typing {
+                emptyCaptureBox
+            } else {
+                rambleBox
+            }
+
+            Button {
+                talk.dismissed = true
+            } label: {
+                Text("or fill in the \(prompts.count) boxes yourself")
+                    .font(PaperInk.sans(12))
+                    .foregroundStyle(PaperInk.stone500)
+                    .underline(true, pattern: .dash)
+            }
+            .disabled(shaping)
+        }
+    }
+
+    private var isTalkRecording: Bool {
+        recorder.isRecording && recorder.activeKey == Self.rambleKey
+    }
+
+    private var emptyCaptureBox: some View {
+        VStack(spacing: 12) {
+            Button {
+                toggleTalkDictation()
+            } label: {
+                Image(systemName: isTalkRecording ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 64, height: 64)
+                    .background(isTalkRecording ? .red : PaperInk.brand)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(PaperInk.ink, lineWidth: 2))
+                    .stickerShadow(offset: 3, opacity: 1)
+            }
+            .disabled(busyKey == Self.rambleKey)
+
+            if busyKey == Self.rambleKey {
+                Text("Tidying up…")
+                    .font(PaperInk.sans(12.5))
+                    .foregroundStyle(PaperInk.stone500)
+            } else if isTalkRecording {
+                Text("Listening — tap to stop.")
+                    .font(PaperInk.sans(12.5))
+                    .foregroundStyle(PaperInk.stone500)
+            } else {
+                VStack(spacing: 2) {
+                    Text("**Tap to talk** — a minute of honest rambling is plenty.")
+                        .font(PaperInk.sans(13))
+                        .foregroundStyle(PaperInk.stone500)
+                    Button("Typing works too") { typing = true }
+                        .font(PaperInk.sans(12))
+                        .foregroundStyle(PaperInk.stone500)
+                        .underline(true, pattern: .dash)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 180)
+        .padding(20)
+        .background(PaperInk.paper)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(PaperInk.stone400, style: StrokeStyle(lineWidth: 2, dash: [6, 5]))
+        )
+    }
+
+    private var rambleBox: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField(
+                "Why you picked it, what you took away, what might change…",
+                text: $talk.ramble,
+                axis: .vertical
+            )
+            .font(PaperInk.sans(14))
+            .lineLimit(5 ... 14)
+
+            HStack(spacing: 12) {
+                Button {
+                    shapeRamble()
+                } label: {
+                    HStack(spacing: 6) {
+                        if shaping {
+                            ProgressView().controlSize(.mini).tint(.white)
+                        } else {
+                            Sparkle(size: 13)
+                        }
+                        Text("Shape into \(prompts.count) reflections")
+                    }
+                }
+                .buttonStyle(InkButtonStyle(prominent: true))
+                .disabled(shaping || talk.ramble.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button {
+                    toggleTalkDictation()
+                } label: {
+                    Image(systemName: isTalkRecording ? "stop.circle.fill" : "mic.fill")
+                        .font(.system(size: 17))
+                        .foregroundStyle(isTalkRecording ? .red : PaperInk.stone500)
+                }
+                .disabled(shaping || busyKey == Self.rambleKey)
+            }
+        }
+        .padding(14)
+        .background(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(PaperInk.ink, lineWidth: 2))
+    }
+
+    private static let rambleKey = "_ramble"
+
+    private func toggleTalkDictation() {
+        errorMessage = nil
+        if recorder.isRecording {
+            guard let fileURL = recorder.stop() else { return }
+            busyKey = Self.rambleKey
+            Task {
+                defer { busyKey = nil }
+                do {
+                    let text = try await session.api.transcribe(audioFile: fileURL)
+                    talk.ramble = talk.ramble.isEmpty ? text : talk.ramble + " " + text
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+        } else {
+            Task {
+                if await recorder.start(key: Self.rambleKey) == false {
+                    errorMessage = "Microphone access is needed to dictate — enable it in Settings."
+                }
+            }
+        }
+    }
+
+    private func shapeRamble() {
+        shaping = true
+        errorMessage = nil
+        Task {
+            defer { shaping = false }
+            do {
+                let draft = try await session.api.reflectionDraft(
+                    text: talk.ramble,
+                    context: assistContext
+                )
+                for prompt in prompts {
+                    answers[prompt.key] = (draft[prompt.key] ?? nil) ?? ""
+                }
+                talk.shaped = true
+                talk.dismissed = true
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: Per-prompt boxes
+
+    private var provenance: String? {
+        if talk.shaped {
+            return "Shaped from your dictation — edit anything, or tap a sparkle to redo one box."
+        }
+        return allEmpty ? nil : reflectionSource
+    }
+
+    private var boxesContent: some View {
+        Group {
+            if let provenance {
+                HStack(alignment: .top, spacing: 7) {
+                    Sparkle(size: 11)
+                    Text(provenance)
+                        .font(PaperInk.sans(12))
+                        .foregroundStyle(PaperInk.brandDark)
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(PaperInk.pale)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(PaperInk.brand, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                )
+            }
+
+            ForEach(prompts) { prompt in
+                promptField(prompt)
             }
 
             HStack(spacing: 5) {
@@ -41,6 +284,7 @@ struct ReflectionStepView: View {
                     .tilt(-1)
             }
         }
+        .onAppear { talk.dismissed = true }
     }
 
     private func promptField(_ prompt: Reference.ReflectionPrompt) -> some View {
@@ -119,6 +363,20 @@ struct ReflectionStepView: View {
         }
     }
 
+    /// Grounding for a per-box sparkle redraft: the activity context, the
+    /// other boxes' answers, and the original ramble — so a regenerate
+    /// stays consistent with (and true to) the rest of the reflection.
+    private func boxContext(excluding key: String) -> String {
+        var parts = [assistContext]
+        for prompt in prompts where prompt.key != key {
+            let answer = (answers[prompt.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !answer.isEmpty { parts.append("\(prompt.label): \(answer)") }
+        }
+        let ramble = talk.ramble.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !ramble.isEmpty { parts.append("The user's own reflection notes:\n\(ramble)") }
+        return String(parts.joined(separator: "\n").prefix(4000))
+    }
+
     private func sparkle(_ prompt: Reference.ReflectionPrompt) {
         busyKey = prompt.key
         errorMessage = nil
@@ -128,7 +386,7 @@ struct ReflectionStepView: View {
                 answers[prompt.key] = try await session.api.textAssist(
                     field: prompt.question,
                     text: answers[prompt.key],
-                    context: assistContext
+                    context: boxContext(excluding: prompt.key)
                 )
             } catch {
                 errorMessage = error.localizedDescription

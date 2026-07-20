@@ -25,6 +25,7 @@ struct MergeSheetView: View {
     @State private var organisation = ""
     @State private var summary = ""
     @State private var reflection: [String: String] = [:]
+    @State private var talk = ReflectionTalkState()
     @State private var categorySlugs: Set<String> = []
     @State private var domainCodes: Set<String> = []
     @State private var projectIds: Set<Int> = []
@@ -245,7 +246,8 @@ struct MergeSheetView: View {
             ReflectionStepView(
                 prompts: reference?.reflectionPrompts ?? [],
                 answers: $reflection,
-                assistContext: "Title: \(title)\nSummary: \(summary)"
+                assistContext: "Title: \(title)\nSummary: \(summary)",
+                talk: $talk
             )
 
             if let categories = reference?.categories, !categories.isEmpty {
@@ -300,7 +302,7 @@ struct MergeSheetView: View {
 
     private var piiBoxes: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Possible patient information", systemImage: "exclamationmark.shield.fill")
+            Label("Possible sensitive information", systemImage: "exclamationmark.shield.fill")
                 .font(PaperInk.sans(13, weight: .heavy))
                 .foregroundStyle(.red)
 
@@ -310,7 +312,7 @@ struct MergeSheetView: View {
                         .font(PaperInk.sans(12, weight: .semibold))
 
                     HStack(spacing: 8) {
-                        Button("Remove patient info") { removePii(source.id) }
+                        Button("Remove sensitive info") { removePii(source.id) }
                             .font(PaperInk.sans(12, weight: .bold))
                             .foregroundStyle(PaperInk.ink)
                             .disabled(isWorking)

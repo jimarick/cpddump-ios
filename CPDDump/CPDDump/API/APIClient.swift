@@ -148,6 +148,12 @@ struct APIClient {
         return wrapper.activity
     }
 
+    /// Deletes a kept evidence file. The attachment survives server-side as
+    /// an honest "not kept" stub — the written entry is untouched.
+    func deleteAttachment(id: Int) async throws {
+        try await sendIgnoringBody("DELETE", "attachments/\(id)")
+    }
+
     // MARK: Reference & stats
 
     func reference() async throws -> Reference {
@@ -177,6 +183,16 @@ struct APIClient {
         if let context, !context.isEmpty { body["context"] = context }
         let wrapper: Wrapper = try await send("POST", "ai/text-assist", json: body)
         return wrapper.text
+    }
+
+    /// The talk-first capture: one ramble in, an answer per reflection
+    /// prompt out — nil for prompts the ramble doesn't support.
+    func reflectionDraft(text: String, context: String?) async throws -> [String: String?] {
+        struct Wrapper: Codable { var reflection: [String: String?] }
+        var body: [String: String] = ["text": text]
+        if let context, !context.isEmpty { body["context"] = context }
+        let wrapper: Wrapper = try await send("POST", "ai/reflection-draft", json: body)
+        return wrapper.reflection
     }
 
     func transcribe(audioFile: URL) async throws -> String {

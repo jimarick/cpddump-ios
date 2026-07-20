@@ -167,6 +167,13 @@ struct MainTabView: View {
                     }
                 }
                 Divider()
+                Link(destination: session.api.baseURL.appending(path: "ai")) {
+                    Label("How we use AI", systemImage: "sparkle")
+                }
+                Link(destination: session.api.baseURL.appending(path: "privacy")) {
+                    Label("Privacy policy", systemImage: "lock")
+                }
+                Divider()
                 Button("Sign out", role: .destructive) {
                     Task { await session.signOut() }
                 }

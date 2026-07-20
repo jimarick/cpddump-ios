@@ -18,6 +18,7 @@ struct ActivityEditView: View {
     @State private var organisation = ""
     @State private var summary = ""
     @State private var reflection: [String: String] = [:]
+    @State private var talk = ReflectionTalkState()
     @State private var categorySlugs: Set<String> = []
     @State private var domainCodes: Set<String> = []
     @State private var projectIds: Set<Int> = []
@@ -90,7 +91,8 @@ struct ActivityEditView: View {
                     ReflectionStepView(
                         prompts: reference?.reflectionPrompts ?? [],
                         answers: $reflection,
-                        assistContext: "Title: \(title)\nSummary: \(summary)"
+                        assistContext: "Title: \(title)\nSummary: \(summary)",
+                        talk: $talk
                     )
 
                     if let categories = reference?.categories, !categories.isEmpty {

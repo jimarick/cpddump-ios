@@ -36,6 +36,7 @@ struct ReviewSheetView: View {
 
     // Reflection: answers keyed by prompt key
     @State private var reflection: [String: String] = [:]
+    @State private var talk = ReflectionTalkState()
 
     // Categorise
     @State private var categorySlugs: Set<String> = []
@@ -68,7 +69,9 @@ struct ReviewSheetView: View {
                     case .reflection: ReflectionStepView(
                         prompts: reference?.reflectionPrompts ?? [],
                         answers: $reflection,
-                        assistContext: assistContext
+                        assistContext: assistContext,
+                        talk: $talk,
+                        reflectionSource: item.aiAnalysis?.reflectionSource
                     )
                     case .categorise: categoriseStep
                     }
@@ -250,7 +253,7 @@ struct ReviewSheetView: View {
     /// itself currently lives on the web; here the user affirms they checked.
     private var piiGateBox: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Possible patient information", systemImage: "exclamationmark.shield.fill")
+            Label("Possible sensitive information", systemImage: "exclamationmark.shield.fill")
                 .font(PaperInk.sans(13, weight: .heavy))
                 .foregroundStyle(.red)
 

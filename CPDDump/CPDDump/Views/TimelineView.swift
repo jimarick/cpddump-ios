@@ -280,6 +280,7 @@ struct ActivityDetailView: View {
     @State private var confirmingSplit = false
     @State private var editing = false
     @State private var isWorking = false
+    @State private var deletingAttachment: AttachmentRef?
 
     var body: some View {
         ScrollView {
@@ -331,9 +332,26 @@ struct ActivityDetailView: View {
                         section("Attachments") {
                             VStack(alignment: .leading, spacing: 6) {
                                 ForEach(activity.attachments) { attachment in
-                                    Label(attachment.name ?? "Attachment", systemImage: "paperclip")
-                                        .font(PaperInk.sans(13))
-                                        .foregroundStyle(PaperInk.stone600)
+                                    HStack(spacing: 8) {
+                                        Label(attachment.name ?? "Attachment", systemImage: attachment.purged == true ? "doc.badge.ellipsis" : "paperclip")
+                                            .font(PaperInk.sans(13))
+                                            .foregroundStyle(PaperInk.stone600)
+                                            .strikethrough(attachment.purged == true, color: PaperInk.stone400)
+                                        if attachment.purged == true {
+                                            Text("not kept")
+                                                .font(PaperInk.sans(11))
+                                                .foregroundStyle(PaperInk.stone400)
+                                        } else {
+                                            Button {
+                                                deletingAttachment = attachment
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .font(.system(size: 14))
+                                                    .foregroundStyle(PaperInk.stone400)
+                                            }
+                                            .disabled(isWorking)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -375,6 +393,21 @@ struct ActivityDetailView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
             }
+        }
+        .confirmationDialog(
+            "Delete “\(deletingAttachment?.name ?? "this file")”?",
+            isPresented: Binding(
+                get: { deletingAttachment != nil },
+                set: { if !$0 { deletingAttachment = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete file", role: .destructive) {
+                if let attachment = deletingAttachment { deleteAttachment(attachment) }
+            }
+            Button("Keep it", role: .cancel) {}
+        } message: {
+            Text("The file is permanently deleted — your written entry is kept.")
         }
         .confirmationDialog(
             "Split “\(activity?.title ?? "this")” back into \(activity?.mergedFrom.count ?? 0) activities?",
@@ -436,6 +469,20 @@ struct ActivityDetailView: View {
                 _ = try await session.api.unmerge(activityId: activityId)
                 onChanged?()
                 dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteAttachment(_ attachment: AttachmentRef) {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                try await session.api.deleteAttachment(id: attachment.id)
+                activity = try await session.api.activity(id: activityId)
+                onChanged?()
             } catch {
                 errorMessage = error.localizedDescription
             }

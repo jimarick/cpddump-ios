@@ -183,6 +183,8 @@ struct AiAnalysis: Codable {
     var summary: String?
     var suggestedLearningPoints: [String]?
     var reflectionDraft: [String: String?]?
+    /// Where a pre-filled reflection came from, quoting the user's words.
+    var reflectionSource: String?
     var categorySlugs: [String]?
     var domainCodes: [String]?
     var attributeCodes: [String]?
@@ -201,6 +203,7 @@ struct AiAnalysis: Codable {
         case cpdPoints = "cpd_points"
         case suggestedLearningPoints = "suggested_learning_points"
         case reflectionDraft = "reflection_draft"
+        case reflectionSource = "reflection_source"
         case categorySlugs = "category_slugs"
         case domainCodes = "domain_codes"
         case attributeCodes = "attribute_codes"
@@ -222,6 +225,7 @@ struct AiAnalysis: Codable {
         summary = try? container.decode(String.self, forKey: .summary)
         suggestedLearningPoints = try? container.decode([String].self, forKey: .suggestedLearningPoints)
         reflectionDraft = try? container.decode([String: String?].self, forKey: .reflectionDraft)
+        reflectionSource = try? container.decode(String.self, forKey: .reflectionSource)
         categorySlugs = try? container.decode([String].self, forKey: .categorySlugs)
         domainCodes = try? container.decode([String].self, forKey: .domainCodes)
         attributeCodes = try? container.decode([String].self, forKey: .attributeCodes)
