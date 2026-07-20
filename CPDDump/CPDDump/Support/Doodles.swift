@@ -63,6 +63,15 @@ enum DoodleGlyphs {
         .init(d: "M13.2 1.1 Q13.7 6.4 15.7 9.5 Q19.2 11.2 24 12.1 Q19.1 13 15.5 14.9 Q14.2 18.4 12.8 23 Q12 18.2 10.2 14.7 Q6.7 13.1 2 11.9 Q6.9 10.9 10.4 9.2 Q12.2 5.7 13.2 1.1 Z", orange: true, filled: true),
     ])
 
+    /// Hand-drawn rubbish bin — wobbly lid, handle, tapered body, two ribs.
+    static let bin = DoodleSpec(width: 26, height: 28, strokes: [
+        .init(d: "M4.2 7.4 Q13.1 5.6 22.2 7"),
+        .init(d: "M10.4 6.7 Q10.2 3.3 13.2 3.6 Q16 3.2 15.8 6.3"),
+        .init(d: "M6.2 8.1 L7.5 24.2 Q7.6 26.4 9.7 26.2 L16.9 25.9 Q19 26.1 19.1 23.9 L20.1 7.6"),
+        .init(d: "M11 11.3 Q10.7 16.6 11.4 21.5"),
+        .init(d: "M15.5 11 Q15.9 16.2 15.2 21.3"),
+    ])
+
     static let monitor = DoodleSpec(width: 30, height: 28, strokes: [
         .init(d: "M4.8 3.8 Q2.4 3.2 3.2 5.6 L2.5 17.2 Q2.1 20.3 5.2 19.8 L25 18.9 Q27.7 19.5 27.2 16.9 L28 5 Q28.5 2.4 25.7 3.1 L4.2 3.3 Z"),
         .init(d: "M6 24.7 Q15.2 22.9 24.2 24.3"),
@@ -71,16 +80,18 @@ enum DoodleGlyphs {
 }
 
 /// Renders one doodle at its natural size, group opacity 16% like the web.
+/// A `tint` overrides every stroke colour (for full-strength icon use).
 struct DoodleGlyph: View {
     var spec: DoodleSpec
     var opacity: Double = 0.16
+    var tint: Color?
 
     var body: some View {
         Canvas { context, _ in
             context.opacity = opacity
             for stroke in spec.strokes {
                 let path = SVGPath.parse(stroke.d)
-                let color = stroke.orange ? PaperInk.brand : PaperInk.ink
+                let color = tint ?? (stroke.orange ? PaperInk.brand : PaperInk.ink)
                 if stroke.filled {
                     context.fill(path, with: .color(color))
                 } else {

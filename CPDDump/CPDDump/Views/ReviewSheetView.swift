@@ -314,6 +314,8 @@ struct ReviewSheetView: View {
                 }
             } else {
                 HStack(spacing: 10) {
+                    // First page: the bin sits leading. Later pages: Back
+                    // takes the leading slot and the bin moves to the middle.
                     Group {
                         if step != .details {
                             Button("Back") {
@@ -323,15 +325,18 @@ struct ReviewSheetView: View {
                             }
                             .buttonStyle(InkButtonStyle(prominent: true))
                             .disabled(isWorking)
+                        } else {
+                            binButton
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button("Bin it", role: .destructive) { confirmingBin = true }
-                        .font(PaperInk.sans(14, weight: .bold))
-                        .foregroundStyle(.red)
-                        .disabled(isWorking)
-                        .frame(maxWidth: .infinity)
+                    Group {
+                        if step != .details {
+                            binButton
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
 
                     Group {
                         if step != .categorise {
@@ -357,6 +362,16 @@ struct ReviewSheetView: View {
     }
 
     // MARK: Bits
+
+    /// The hand-drawn bin, full-strength red — always behind a confirm.
+    private var binButton: some View {
+        Button { confirmingBin = true } label: {
+            DoodleGlyph(spec: DoodleGlyphs.bin, opacity: 1, tint: .red)
+        }
+        .buttonStyle(.plain)
+        .disabled(isWorking)
+        .accessibilityLabel("Bin it")
+    }
 
     private var typeName: String {
         reference?.activityTypes.first { $0.slug == typeSlug }?.name ?? "Choose…"
