@@ -78,21 +78,6 @@ struct TimelineView: View {
                         }
                     }
                 }
-                if !model.activities.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        // Plain text like the inbox's Select — no system
-                        // button chrome around it.
-                        Button(selecting ? "Done" : "Select") {
-                            withAnimation(.snappy) {
-                                selecting.toggle()
-                                selectedIds = []
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .font(PaperInk.sans(13, weight: .bold))
-                        .foregroundStyle(PaperInk.brandDark)
-                    }
-                }
             }
             .navigationDestination(for: ActivitySummary.self) { activity in
                 ActivityDetailView(activityId: activity.id) {
@@ -193,12 +178,28 @@ struct TimelineView: View {
                 summaryPill(stats)
             }
         }
+        // Plain text like the inbox's Select — outside the toolbar so the
+        // system never wraps it in glass chrome.
+        .overlay(alignment: .topTrailing) {
+            Button(selecting ? "Done" : "Select") {
+                withAnimation(.snappy) {
+                    selecting.toggle()
+                    selectedIds = []
+                }
+            }
+            .buttonStyle(.plain)
+            .font(PaperInk.sans(13, weight: .bold))
+            .foregroundStyle(PaperInk.brandDark)
+            .padding(.trailing, 18)
+            .padding(.top, 6)
+        }
     }
 
     private func summaryPill(_ stats: StatsResponse.Stats) -> some View {
-        // Sits at the same screen height as the inbox pill.
+        // Both pages' containers end at the tab bar, so matching the
+        // inbox's 26pt lift puts the pills at the same screen height.
         StatsSummaryPill.period(stats)
-            .padding(.bottom, 40)
+            .padding(.bottom, 26)
     }
 
     @ViewBuilder
