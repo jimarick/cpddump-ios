@@ -101,11 +101,11 @@ struct APIClient {
         try await send("POST", "merges/preview", body: try Self.encoder.encode(seed))
     }
 
-    /// AI-combined reflections for the merge sheet — costs tokens, on demand.
-    func mergeReflection(seed: MergeSeed) async throws -> [String: String] {
-        struct Wrapper: Codable { var reflection: [String: String] }
-        let wrapper: Wrapper = try await send("POST", "merges/reflection", body: try Self.encoder.encode(seed))
-        return wrapper.reflection
+    /// The AI-drafted combined entry for the merge sheet — costs tokens, on demand.
+    func mergeDraft(seed: MergeSeed) async throws -> MergeDraft {
+        struct Wrapper: Codable { var draft: MergeDraft }
+        let wrapper: Wrapper = try await send("POST", "merges/draft", body: try Self.encoder.encode(seed))
+        return wrapper.draft
     }
 
     /// Returns the merged activity's id.

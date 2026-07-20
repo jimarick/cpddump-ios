@@ -610,6 +610,24 @@ struct MergePreview: Codable {
     }
 }
 
+/// The AI-drafted combined entry, applied over the deterministic defaults.
+struct MergeDraft: Codable {
+    var title: String?
+    var activityTypeSlug: String?
+    var organisation: String?
+    var details: String?
+    var reflection: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case title, organisation, details, reflection
+        case activityTypeSlug = "activity_type_slug"
+    }
+
+    var isEmpty: Bool {
+        (title ?? "").isEmpty && (details ?? "").isEmpty && (reflection ?? [:]).isEmpty
+    }
+}
+
 /// What the "Merge with…" picker can offer.
 struct MergeCandidates: Codable {
     var activities: [ActivityCandidate]

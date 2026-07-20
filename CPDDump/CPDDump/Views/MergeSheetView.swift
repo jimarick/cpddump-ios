@@ -32,11 +32,19 @@ struct MergeSheetView: View {
     @State private var keepAttachmentIds: Set<Int> = []
     @State private var piiAcks: Set<Int> = []
 
-    // AI reflection combining
+    // The AI-drafted combined entry (title/type/org/details/reflections)
     private enum AiState { case pending, applied, undone, failed }
+    private struct DraftSnapshot {
+        var title: String
+        var typeSlug: String
+        var organisation: String
+        var summary: String
+        var reflection: [String: String]
+    }
+
     @State private var aiState: AiState = .pending
-    @State private var aiReflection: [String: String]?
-    @State private var preAiReflection: [String: String]?
+    @State private var aiDraft: MergeDraft?
+    @State private var preAiSnapshot: DraftSnapshot?
 
     @State private var isWorking = false
     @State private var errorMessage: String?
@@ -96,7 +104,7 @@ struct MergeSheetView: View {
             seed = initialSeed
             await session.loadReference()
             await loadPreview()
-            await combineReflections()
+            await loadDraft()
         }
     }
 
@@ -328,14 +336,14 @@ struct MergeSheetView: View {
             HStack(spacing: 6) {
                 Sparkle(size: 12)
                 ProgressView().controlSize(.mini)
-                Text("AI is weaving the reflections together…")
+                Text("AI is drafting the combined entry…")
                     .font(PaperInk.sans(12))
                     .foregroundStyle(PaperInk.stone600)
             }
         case .applied:
             HStack(spacing: 6) {
                 Sparkle(size: 12)
-                Text("Reflections combined by AI — edit below, or")
+                Text("Title, details and reflections drafted by AI — edit below, or")
                     .font(PaperInk.sans(12))
                     .foregroundStyle(PaperInk.stone600)
                 Button("undo") { undoAi() }
@@ -466,44 +474,56 @@ struct MergeSheetView: View {
             reflection = defaults.reflection ?? [:]
         }
 
-        // The AI combine already landed — apply it now. AI answers layer
-        // OVER the stitched defaults: a key the AI left empty keeps its
-        // concatenated sources.
-        if aiState == .pending, let combined = aiReflection {
-            preAiReflection = reflection
-            reflection = reflection.merging(combined) { _, ai in ai }
-            aiState = .applied
+        // The AI draft already landed — apply it now.
+        if aiState == .pending, let draft = aiDraft {
+            applyDraft(draft)
         }
     }
 
-    private func combineReflections() async {
+    private func loadDraft() async {
         do {
-            let combined = try await session.api.mergeReflection(seed: initialSeed)
-            guard !combined.isEmpty else {
+            let draft = try await session.api.mergeDraft(seed: initialSeed)
+            guard !draft.isEmpty else {
                 if aiState == .pending { aiState = .failed }
                 return
             }
-            aiReflection = combined
+            aiDraft = draft
             if preview != nil, aiState == .pending {
-                preAiReflection = reflection
-                reflection = reflection.merging(combined) { _, ai in ai }
-                aiState = .applied
+                applyDraft(draft)
             }
         } catch {
             if aiState == .pending { aiState = .failed }
         }
     }
 
+    /// AI values layer OVER the deterministic defaults: anything the draft
+    /// left empty keeps its stitched-together starting value.
+    private func applyDraft(_ draft: MergeDraft) {
+        preAiSnapshot = DraftSnapshot(
+            title: title, typeSlug: typeSlug, organisation: organisation,
+            summary: summary, reflection: reflection
+        )
+        if let value = draft.title, !value.isEmpty { title = value }
+        if let value = draft.activityTypeSlug, !value.isEmpty { typeSlug = value }
+        if let value = draft.organisation, !value.isEmpty { organisation = value }
+        if let value = draft.details, !value.isEmpty { summary = value }
+        reflection = reflection.merging(draft.reflection ?? [:]) { _, ai in ai }
+        aiState = .applied
+    }
+
     private func undoAi() {
-        if let previous = preAiReflection { reflection = previous }
+        if let snapshot = preAiSnapshot {
+            title = snapshot.title
+            typeSlug = snapshot.typeSlug
+            organisation = snapshot.organisation
+            summary = snapshot.summary
+            reflection = snapshot.reflection
+        }
         aiState = .undone
     }
 
     private func redoAi() {
-        if let combined = aiReflection {
-            reflection = (preAiReflection ?? reflection).merging(combined) { _, ai in ai }
-            aiState = .applied
-        }
+        if let draft = aiDraft { applyDraft(draft) }
     }
 
     private func removePii(_ itemId: Int) {
