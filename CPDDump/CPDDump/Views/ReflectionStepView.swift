@@ -144,7 +144,7 @@ struct ReflectionStepView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 180)
+        .frame(maxWidth: .infinity, minHeight: 340)
         .padding(20)
         .background(PaperInk.paper)
         .clipShape(RoundedRectangle(cornerRadius: 14))

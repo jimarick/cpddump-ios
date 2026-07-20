@@ -88,8 +88,6 @@ struct InboxView: View {
 
             if selecting {
                 mergeBar
-            } else {
-                statsLine
             }
         }
         .background(PaperInk.paper)
@@ -401,27 +399,6 @@ struct InboxView: View {
 
     private func toggleSelection(_ id: Int) {
         if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
-    }
-
-    private var statsLine: some View {
-        Group {
-            if let stats = model.stats?.stats {
-                (Text("\(stats.activities) \(stats.activities == 1 ? "activity" : "activities") · ")
-                    + Text(Self.points(stats.points)).foregroundColor(PaperInk.brand).fontWeight(.heavy)
-                    + Text(" CPD points · ")
-                    + Text("\(stats.awaiting)").foregroundColor(PaperInk.brand).fontWeight(.heavy)
-                    + Text(" awaiting approval"))
-                    .font(PaperInk.sans(12))
-                    .foregroundStyle(PaperInk.stone600)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(PaperInk.paperAlt)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-            }
-        }
     }
 
     static func points(_ value: Double) -> String {

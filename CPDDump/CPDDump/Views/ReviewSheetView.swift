@@ -27,7 +27,6 @@ struct ReviewSheetView: View {
     @State private var startsOn: Date = .now
     @State private var hasDate = false
     @State private var endsOn: Date = .now
-    @State private var hasEndDate = false
     /// No input any more (parity with the web) but MUST stay in the payload:
     /// the AI-extracted value still feeds exports and merges.
     @State private var organisation = ""
@@ -43,6 +42,7 @@ struct ReviewSheetView: View {
     @State private var projectIds: Set<Int> = []
 
     @State private var confirmingSave = false
+    @State private var confirmingBin = false
     @State private var isWorking = false
     @State private var errorMessage: String?
 
@@ -95,6 +95,16 @@ struct ReviewSheetView: View {
         .task {
             await session.loadReference()
             seedFromAnalysis()
+        }
+        .confirmationDialog(
+            "Bin “\(title.isEmpty ? item.displayTitle : title)”?",
+            isPresented: $confirmingBin,
+            titleVisibility: .visible
+        ) {
+            Button("Bin it", role: .destructive) { bin() }
+            Button("Keep it", role: .cancel) {}
+        } message: {
+            Text("Binned means deleted — the draft and any files are gone for good.")
         }
         .sheet(isPresented: $confirmingSave) {
             ApproveConfirmSheet(
@@ -154,64 +164,60 @@ struct ReviewSheetView: View {
                     .foregroundStyle(PaperInk.stone600)
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 4) {
+                FieldLabel(text: "Dates")
+                if hasDate {
                     HStack(spacing: 6) {
-                        FieldLabel(text: hasEndDate ? "Dates" : "Date")
-                        if hasDate && !hasEndDate {
-                            Button("+ end") {
-                                endsOn = startsOn
-                                hasEndDate = true
-                            }
-                            .font(PaperInk.sans(11, weight: .semibold))
-                            .foregroundStyle(PaperInk.stone500)
-                        }
+                        DatePicker("", selection: $startsOn, displayedComponents: .date)
+                            .labelsHidden()
+                        Text("→").foregroundStyle(PaperInk.stone400)
+                        DatePicker("", selection: $endsOn, displayedComponents: .date)
+                            .labelsHidden()
+                        Spacer(minLength: 0)
                     }
-                    if hasDate {
-                        HStack(spacing: 4) {
-                            DatePicker("", selection: $startsOn, displayedComponents: .date)
-                                .labelsHidden()
-                            if hasEndDate {
-                                Text("→").foregroundStyle(PaperInk.stone400)
-                                DatePicker("", selection: $endsOn, displayedComponents: .date)
-                                    .labelsHidden()
-                            }
-                        }
-                    } else {
-                        Button("Add a date") { hasDate = true }
-                            .font(PaperInk.sans(13, weight: .semibold))
-                            .foregroundStyle(PaperInk.brandDark)
-                            .padding(.vertical, 8)
+                    .onChange(of: startsOn) {
+                        if endsOn < startsOn { endsOn = startsOn }
                     }
+                } else {
+                    Button("Add a date") {
+                        hasDate = true
+                        endsOn = startsOn
+                    }
+                    .font(PaperInk.sans(13, weight: .semibold))
+                    .foregroundStyle(PaperInk.brandDark)
+                    .padding(.vertical, 8)
                 }
-                labelled("Points") {
-                    TextField("1", text: $points)
-                        .keyboardType(.decimalPad)
-                }
-                .frame(width: 90)
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    FieldLabel(text: "Type")
-                    Menu {
-                        ForEach(reference?.activityTypes ?? []) { type in
-                            Button(type.name) { typeSlug = type.slug }
-                        }
-                    } label: {
-                        menuLabel(typeName)
+            VStack(alignment: .leading, spacing: 4) {
+                FieldLabel(text: "Points")
+                TextField("1", text: $points)
+                    .keyboardType(.decimalPad)
+                    .font(PaperInk.sans(14))
+                    .boxed()
+                    .frame(width: 110)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                FieldLabel(text: "Type")
+                Menu {
+                    ForEach(reference?.activityTypes ?? []) { type in
+                        Button(type.name) { typeSlug = type.slug }
                     }
+                } label: {
+                    menuLabel(typeName)
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    FieldLabel(text: "Project / goal")
-                    Menu {
-                        Button("None") { projectIds = [] }
-                        ForEach(reference?.projects ?? []) { project in
-                            Button(project.title) { projectIds = [project.id] }
-                        }
-                    } label: {
-                        menuLabel(projectName)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                FieldLabel(text: "Project / goal")
+                Menu {
+                    Button("None") { projectIds = [] }
+                    ForEach(reference?.projects ?? []) { project in
+                        Button(project.title) { projectIds = [project.id] }
                     }
+                } label: {
+                    menuLabel(projectName)
                 }
             }
 
@@ -220,8 +226,15 @@ struct ReviewSheetView: View {
                     .lineLimit(4 ... 10)
             }
 
-            sparkline("Drafted from your \(item.sourceLabel.lowercased()) — edit anything.")
+            sparkline(confidenceNote)
         }
+    }
+
+    private var confidenceNote: String {
+        if let confidence = analysis?.confidence {
+            return "Drafted from your \(item.sourceLabel.lowercased()) (AI confidence \(Int(confidence * 100))%) — edit anything."
+        }
+        return "Drafted from your \(item.sourceLabel.lowercased()) — edit anything."
     }
 
     /// "Looks like something you already have" — accepting jumps straight to
@@ -300,44 +313,42 @@ struct ReviewSheetView: View {
                     Spacer()
                 }
             } else {
-                HStack(spacing: 14) {
-                    if step != .details {
-                        Button("Back") {
-                            withAnimation(.snappy) {
-                                step = Step(rawValue: step.rawValue - 1) ?? .details
+                HStack(spacing: 10) {
+                    Group {
+                        if step != .details {
+                            Button("Back") {
+                                withAnimation(.snappy) {
+                                    step = Step(rawValue: step.rawValue - 1) ?? .details
+                                }
                             }
+                            .buttonStyle(InkButtonStyle(prominent: true))
+                            .disabled(isWorking)
                         }
-                        .font(PaperInk.sans(14, weight: .bold))
-                        .foregroundStyle(PaperInk.stone600)
-                        .disabled(isWorking)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button("Bin it", role: .destructive) { bin() }
+                    Button("Bin it", role: .destructive) { confirmingBin = true }
                         .font(PaperInk.sans(14, weight: .bold))
                         .foregroundStyle(.red)
                         .disabled(isWorking)
+                        .frame(maxWidth: .infinity)
 
-                    Spacer()
-
-                    if let confidence = analysis?.confidence, step == .details {
-                        Text("AI confidence \(Int(confidence * 100))%")
-                            .font(PaperInk.sans(10, weight: .bold))
-                            .foregroundStyle(PaperInk.stone500)
-                    }
-
-                    if step != .categorise {
-                        Button("Next") {
-                            withAnimation(.snappy) {
-                                step = Step(rawValue: step.rawValue + 1) ?? .categorise
+                    Group {
+                        if step != .categorise {
+                            Button("Next") {
+                                withAnimation(.snappy) {
+                                    step = Step(rawValue: step.rawValue + 1) ?? .categorise
+                                }
                             }
-                        }
-                        .buttonStyle(InkButtonStyle(prominent: true))
-                        .disabled(isWorking)
-                    } else {
-                        Button(isWorking ? "Approving…" : "Approve") { approveTapped() }
                             .buttonStyle(InkButtonStyle(prominent: true))
-                            .disabled(isWorking || title.isEmpty || typeSlug.isEmpty)
+                            .disabled(isWorking)
+                        } else {
+                            Button(isWorking ? "Approving…" : "Approve") { approveTapped() }
+                                .buttonStyle(InkButtonStyle(prominent: true))
+                                .disabled(isWorking || title.isEmpty || typeSlug.isEmpty)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
@@ -444,10 +455,7 @@ struct ReviewSheetView: View {
             startsOn = date
             hasDate = true
         }
-        if let iso = analysis.endsOn, let date = parser.date(from: iso), date != startsOn {
-            endsOn = date
-            hasEndDate = true
-        }
+        endsOn = analysis.endsOn.flatMap { parser.date(from: $0) } ?? startsOn
         organisation = analysis.organisation ?? ""
         summary = analysis.summary ?? ""
         reflection = (analysis.reflectionDraft ?? [:]).compactMapValues { $0 }
@@ -493,7 +501,7 @@ struct ReviewSheetView: View {
                     title: title,
                     activityTypeSlug: typeSlug,
                     startsOn: hasDate ? formatter.string(from: startsOn) : nil,
-                    endsOn: hasDate && hasEndDate ? formatter.string(from: endsOn) : nil,
+                    endsOn: hasDate && endsOn > startsOn ? formatter.string(from: endsOn) : nil,
                     organisation: organisation.isEmpty ? nil : organisation,
                     cpdPoints: Double(points.replacingOccurrences(of: ",", with: ".")) ?? 0,
                     summary: summary.isEmpty ? nil : summary,
