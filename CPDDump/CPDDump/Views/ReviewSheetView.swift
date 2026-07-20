@@ -1,7 +1,10 @@
 import SwiftUI
 
 /// The web's three-step review wizard (Details / Reflection / Categorise)
-/// as a native bottom sheet. Edits the AI draft, then approves or bins.
+/// as a native bottom sheet: editable title up top, linear Next/Back with a
+/// "N of 3" counter, and every sensitive-info / keep-file decision deferred
+/// to the "Before this is saved" confirm sheet — the form itself carries no
+/// warning banners.
 struct ReviewSheetView: View {
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
@@ -13,14 +16,6 @@ struct ReviewSheetView: View {
 
     enum Step: Int, CaseIterable {
         case details, reflection, categorise
-
-        var label: String {
-            switch self {
-            case .details: "Details"
-            case .reflection: "Reflection"
-            case .categorise: "Categorise"
-            }
-        }
     }
 
     @State private var step: Step = .details
@@ -31,6 +26,10 @@ struct ReviewSheetView: View {
     @State private var points = ""
     @State private var startsOn: Date = .now
     @State private var hasDate = false
+    @State private var endsOn: Date = .now
+    @State private var hasEndDate = false
+    /// No input any more (parity with the web) but MUST stay in the payload:
+    /// the AI-extracted value still feeds exports and merges.
     @State private var organisation = ""
     @State private var summary = ""
 
@@ -42,16 +41,21 @@ struct ReviewSheetView: View {
     @State private var categorySlugs: Set<String> = []
     @State private var domainCodes: Set<String> = []
     @State private var projectIds: Set<Int> = []
-    // Delete-by-default: files are purged on approval unless kept here.
-    @State private var keepAttachmentIds: Set<Int> = []
-    // PII gate: flagged patient info requires an explicit decision.
-    @State private var piiAcknowledged = false
 
+    @State private var confirmingSave = false
     @State private var isWorking = false
     @State private var errorMessage: String?
 
     private var analysis: AiAnalysis? { item.aiAnalysis }
     private var reference: Reference? { session.reference }
+
+    private var keepableFiles: [AttachmentRef] {
+        item.attachments.filter { $0.purged != true }
+    }
+
+    private var asksAboutFiles: Bool {
+        session.user?.asksAboutAttachments ?? true && !keepableFiles.isEmpty
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -60,10 +64,14 @@ struct ReviewSheetView: View {
                 .frame(width: 40, height: 4)
                 .padding(.top, 10)
 
-            stepPills
+            header
 
             ScrollView {
-                Group {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let suggestions = item.mergeSuggestions, !suggestions.isEmpty, onMergeInstead != nil {
+                        mergeSuggestionBox(suggestions)
+                    }
+
                     switch step {
                     case .details: detailsStep
                     case .reflection: ReflectionStepView(
@@ -88,55 +96,99 @@ struct ReviewSheetView: View {
             await session.loadReference()
             seedFromAnalysis()
         }
+        .sheet(isPresented: $confirmingSave) {
+            ApproveConfirmSheet(
+                files: asksAboutFiles
+                    ? keepableFiles.map { ConfirmFile(id: $0.id, name: $0.name ?? "Attachment \($0.id)") }
+                    : [],
+                flags: item.piiGate == true
+                    ? (item.aiWarnings?.piiFlags ?? []).map {
+                        SensitiveFlag(type: $0.type, excerpt: $0.excerpt.isEmpty ? nil : $0.excerpt)
+                    }
+                    : [],
+                flagLocation: item.piiGate == true && !keepableFiles.isEmpty && !asksAboutFiles
+                    ? "an attached file"
+                    : nil,
+                verb: "Approve",
+                isWorking: isWorking,
+                onConfirm: { keepIds, piiAck in
+                    submitApprove(keepIds: keepIds, piiAck: piiAck)
+                },
+                onRemoveInfo: item.piiGate == true && keepableFiles.isEmpty
+                    ? { removeInfoAndApprove() }
+                    : nil,
+                onCancel: { confirmingSave = false }
+            )
+        }
     }
 
-    // MARK: Steps
+    // MARK: Header — editable title + step counter, as on the web
 
-    private var stepPills: some View {
-        HStack(spacing: 6) {
-            ForEach(Step.allCases, id: \.rawValue) { candidate in
-                let active = candidate == step
-                Button {
-                    withAnimation(.snappy) { step = candidate }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("\(candidate.rawValue + 1)")
-                            .font(PaperInk.sans(9, weight: .heavy))
-                            .foregroundStyle(active ? .white : PaperInk.stone500)
-                            .frame(width: 14, height: 14)
-                            .background(active ? PaperInk.brand : PaperInk.paperAlt)
-                            .clipShape(Circle())
-                        Text(candidate.label)
-                            .font(PaperInk.sans(11, weight: .bold))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(active ? PaperInk.tint : .white)
-                    .foregroundStyle(active ? PaperInk.brandDark : PaperInk.stone500)
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule().stroke(
-                            active ? PaperInk.ink : PaperInk.stone400,
-                            style: active ? StrokeStyle(lineWidth: 1.5) : StrokeStyle(lineWidth: 1.5, dash: [4, 3])
-                        )
-                    )
-                    .tilt(active ? -0.5 : 0)
-                }
-                .buttonStyle(.plain)
+    private var header: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if item.status == .failed {
+                Text("Analysis failed").display(22)
+            } else {
+                TextField("Untitled evidence", text: $title, axis: .vertical)
+                    .font(PaperInk.display(21))
+                    .lineLimit(1 ... 3)
             }
-            Spacer()
+            Spacer(minLength: 4)
+            if item.status != .failed {
+                Text("\(step.rawValue + 1) of \(Step.allCases.count)")
+                    .font(PaperInk.sans(12, weight: .semibold))
+                    .foregroundStyle(PaperInk.stone400)
+                    .padding(.top, 4)
+            }
         }
         .padding(.horizontal, 16)
     }
 
+    // MARK: Steps
+
     private var detailsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let suggestions = item.mergeSuggestions, !suggestions.isEmpty, onMergeInstead != nil {
-                mergeSuggestionBox(suggestions)
+            if item.status == .failed {
+                Text(item.failureReason ?? "Analysis failed. You can retry, or fill the details in manually.")
+                    .font(PaperInk.sans(13))
+                    .foregroundStyle(PaperInk.stone600)
             }
 
-            labelled("What was it?") {
-                TextField("Title", text: $title, axis: .vertical)
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        FieldLabel(text: hasEndDate ? "Dates" : "Date")
+                        if hasDate && !hasEndDate {
+                            Button("+ end") {
+                                endsOn = startsOn
+                                hasEndDate = true
+                            }
+                            .font(PaperInk.sans(11, weight: .semibold))
+                            .foregroundStyle(PaperInk.stone500)
+                        }
+                    }
+                    if hasDate {
+                        HStack(spacing: 4) {
+                            DatePicker("", selection: $startsOn, displayedComponents: .date)
+                                .labelsHidden()
+                            if hasEndDate {
+                                Text("→").foregroundStyle(PaperInk.stone400)
+                                DatePicker("", selection: $endsOn, displayedComponents: .date)
+                                    .labelsHidden()
+                            }
+                        }
+                    } else {
+                        Button("Add a date") { hasDate = true }
+                            .font(PaperInk.sans(13, weight: .semibold))
+                            .foregroundStyle(PaperInk.brandDark)
+                            .padding(.vertical, 8)
+                    }
+                }
+                labelled("Points") {
+                    TextField("1", text: $points)
+                        .keyboardType(.decimalPad)
+                }
+                .frame(width: 90)
             }
 
             HStack(alignment: .top, spacing: 10) {
@@ -147,55 +199,25 @@ struct ReviewSheetView: View {
                             Button(type.name) { typeSlug = type.slug }
                         }
                     } label: {
-                        HStack {
-                            Text(typeName).font(PaperInk.sans(14)).foregroundStyle(PaperInk.ink)
-                            Spacer()
-                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)).foregroundStyle(PaperInk.stone500)
+                        menuLabel(typeName)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    FieldLabel(text: "Project / goal")
+                    Menu {
+                        Button("None") { projectIds = [] }
+                        ForEach(reference?.projects ?? []) { project in
+                            Button(project.title) { projectIds = [project.id] }
                         }
-                        .boxed()
+                    } label: {
+                        menuLabel(projectName)
                     }
                 }
-                labelled("CPD points") {
-                    TextField("1", text: $points)
-                        .keyboardType(.decimalPad)
-                }
-                .frame(width: 100)
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    FieldLabel(text: "Date")
-                    if hasDate {
-                        DatePicker("", selection: $startsOn, displayedComponents: .date)
-                            .labelsHidden()
-                    } else {
-                        Button("Add a date") { hasDate = true }
-                            .font(PaperInk.sans(13, weight: .semibold))
-                            .foregroundStyle(PaperInk.brandDark)
-                    }
-                }
-                labelled("Organisation") {
-                    TextField("Optional", text: $organisation)
-                }
-            }
-
-            labelled("Summary") {
-                TextField("What happened?", text: $summary, axis: .vertical)
-                    .lineLimit(3 ... 8)
-            }
-
-            if item.piiGate == true {
-                piiGateBox
-            }
-
-            if let missing = item.aiWarnings?.missingEvidence, !missing.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(missing, id: \.self) { warning in
-                        Label(warning, systemImage: "exclamationmark.triangle")
-                            .font(PaperInk.sans(12))
-                            .foregroundStyle(PaperInk.brandDark)
-                    }
-                }
+            labelled("Details") {
+                TextField("What happened, in your own words?", text: $summary, axis: .vertical)
+                    .lineLimit(4 ... 10)
             }
 
             sparkline("Drafted from your \(item.sourceLabel.lowercased()) — edit anything.")
@@ -207,25 +229,20 @@ struct ReviewSheetView: View {
     /// and the user reflects once, on the combined whole. Ignorable; it
     /// simply appears again next time a match exists.
     private func mergeSuggestionBox(_ suggestions: [MergeSuggestion]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 5) {
-                Sparkle(size: 13)
-                Text("Looks like something you already have")
-                    .font(PaperInk.sans(13, weight: .heavy))
-                    .foregroundStyle(PaperInk.brandDark)
+        HStack(spacing: 8) {
+            Sparkle(size: 13)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Looks like “\(suggestions[0].title)”")
+                    .font(PaperInk.sans(12.5, weight: .bold))
+                    .lineLimit(1)
+                if suggestions.count > 1 {
+                    Text("+\(suggestions.count - 1) more")
+                        .font(PaperInk.sans(11))
+                        .foregroundStyle(PaperInk.stone500)
+                }
             }
-
-            ForEach(suggestions) { suggestion in
-                Text("“\(suggestion.title)” \(suggestion.kind == "activity" ? "(on your timeline)" : "(in your inbox)")")
-                    .font(PaperInk.sans(12))
-                    .foregroundStyle(PaperInk.stone600)
-            }
-
-            Text("Merging means you reflect once, on the combined entry — any existing reflection comes with it.")
-                .font(PaperInk.sans(11))
-                .foregroundStyle(PaperInk.stone500)
-
-            Button("Merge into \(suggestions.count == 1 ? "it" : "these") instead…") {
+            Spacer(minLength: 4)
+            Button("Merge instead") {
                 let activities = suggestions.filter { $0.kind == "activity" }
                 let target = activities.first { $0.merged == true }
 
@@ -236,10 +253,11 @@ struct ReviewSheetView: View {
                 ))
                 dismiss()
             }
-            .font(PaperInk.sans(13, weight: .bold))
+            .font(PaperInk.sans(12, weight: .bold))
             .foregroundStyle(PaperInk.brandDark)
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PaperInk.tint.opacity(0.4))
         .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -249,37 +267,6 @@ struct ReviewSheetView: View {
         )
     }
 
-    /// The approval gate for flagged patient information. Removing the info
-    /// itself currently lives on the web; here the user affirms they checked.
-    private var piiGateBox: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Possible sensitive information", systemImage: "exclamationmark.shield.fill")
-                .font(PaperInk.sans(13, weight: .heavy))
-                .foregroundStyle(.red)
-
-            if let flags = item.aiWarnings?.piiFlags, !flags.isEmpty {
-                ForEach(Array(flags.enumerated()), id: \.offset) { _, flag in
-                    Text("\(flag.type.replacingOccurrences(of: "_", with: " ")) · \(flag.severity)")
-                        .font(PaperInk.sans(12))
-                        .foregroundStyle(PaperInk.stone600)
-                }
-            }
-
-            Text("Check the details and summary above. To strip the information from stored files, use the web app — or confirm you've checked it:")
-                .font(PaperInk.sans(12))
-                .foregroundStyle(PaperInk.stone600)
-
-            toggleChip("Keep — I've checked", isOn: piiAcknowledged) {
-                piiAcknowledged.toggle()
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.red.opacity(0.5), lineWidth: 1.5))
-    }
-
     private var categoriseStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let categories = reference?.categories, !categories.isEmpty {
@@ -287,37 +274,6 @@ struct ReviewSheetView: View {
             }
             if let domains = reference?.domains, !domains.isEmpty {
                 chipPicker("Domains", items: domains.map { ($0.code, "\($0.code) · \($0.name)") }, selection: $domainCodes)
-            }
-            if let projects = reference?.projects, !projects.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    FieldLabel(text: "Projects")
-                    FlowLayout(spacing: 8) {
-                        ForEach(projects) { project in
-                            toggleChip(project.title, isOn: projectIds.contains(project.id)) {
-                                toggle(&projectIds, project.id)
-                            }
-                        }
-                    }
-                }
-            }
-            let keepable = item.attachments.filter { $0.purged != true }
-            if !keepable.isEmpty, session.user?.asksAboutAttachments ?? true {
-                VStack(alignment: .leading, spacing: 8) {
-                    FieldLabel(text: "Keep the original file?")
-                    Text("Files are deleted once the entry is filed, unless you keep them as evidence.")
-                        .font(PaperInk.sans(12))
-                        .foregroundStyle(PaperInk.stone500)
-                    FlowLayout(spacing: 8) {
-                        ForEach(keepable) { attachment in
-                            toggleChip(
-                                attachment.name ?? "Attachment \(attachment.id)",
-                                isOn: keepAttachmentIds.contains(attachment.id)
-                            ) {
-                                toggle(&keepAttachmentIds, attachment.id)
-                            }
-                        }
-                    }
-                }
             }
 
             sparkline("The AI pre-ticked its suggestions — adjust freely.")
@@ -332,25 +288,56 @@ struct ReviewSheetView: View {
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
             }
-            HStack(spacing: 14) {
-                Button(isWorking ? "Approving…" : "Approve") { approve() }
-                    .buttonStyle(InkButtonStyle(prominent: true))
-                    .disabled(
-                        isWorking || title.isEmpty || typeSlug.isEmpty
-                            || (item.piiGate == true && !piiAcknowledged)
-                    )
+            if item.status == .failed {
+                HStack(spacing: 14) {
+                    Button("Retry analysis") { retry() }
+                        .buttonStyle(InkButtonStyle(prominent: true))
+                        .disabled(isWorking)
+                    Button("Bin it", role: .destructive) { bin() }
+                        .font(PaperInk.sans(14, weight: .bold))
+                        .foregroundStyle(.red)
+                        .disabled(isWorking)
+                    Spacer()
+                }
+            } else {
+                HStack(spacing: 14) {
+                    if step != .details {
+                        Button("Back") {
+                            withAnimation(.snappy) {
+                                step = Step(rawValue: step.rawValue - 1) ?? .details
+                            }
+                        }
+                        .font(PaperInk.sans(14, weight: .bold))
+                        .foregroundStyle(PaperInk.stone600)
+                        .disabled(isWorking)
+                    }
 
-                Button("Bin it", role: .destructive) { bin() }
-                    .font(PaperInk.sans(14, weight: .bold))
-                    .foregroundStyle(.red)
-                    .disabled(isWorking)
+                    Button("Bin it", role: .destructive) { bin() }
+                        .font(PaperInk.sans(14, weight: .bold))
+                        .foregroundStyle(.red)
+                        .disabled(isWorking)
 
-                Spacer()
+                    Spacer()
 
-                if let confidence = analysis?.confidence {
-                    Text("AI confidence \(Int(confidence * 100))%")
-                        .font(PaperInk.sans(10, weight: .bold))
-                        .foregroundStyle(PaperInk.stone500)
+                    if let confidence = analysis?.confidence, step == .details {
+                        Text("AI confidence \(Int(confidence * 100))%")
+                            .font(PaperInk.sans(10, weight: .bold))
+                            .foregroundStyle(PaperInk.stone500)
+                    }
+
+                    if step != .categorise {
+                        Button("Next") {
+                            withAnimation(.snappy) {
+                                step = Step(rawValue: step.rawValue + 1) ?? .categorise
+                            }
+                        }
+                        .buttonStyle(InkButtonStyle(prominent: true))
+                        .disabled(isWorking)
+                    } else {
+                        Button(isWorking ? "Approving…" : "Approve") { approveTapped() }
+                            .buttonStyle(InkButtonStyle(prominent: true))
+                            .disabled(isWorking || title.isEmpty || typeSlug.isEmpty)
+                    }
                 }
             }
         }
@@ -364,8 +351,27 @@ struct ReviewSheetView: View {
         reference?.activityTypes.first { $0.slug == typeSlug }?.name ?? "Choose…"
     }
 
+    private var projectName: String {
+        guard let id = projectIds.first else { return "None" }
+        return reference?.projects.first { $0.id == id }?.title ?? "None"
+    }
+
     private var assistContext: String {
         "Title: \(title)\nSummary: \(summary)"
+    }
+
+    private func menuLabel(_ text: String) -> some View {
+        HStack {
+            Text(text)
+                .font(PaperInk.sans(14))
+                .foregroundStyle(PaperInk.ink)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10))
+                .foregroundStyle(PaperInk.stone500)
+        }
+        .boxed()
     }
 
     private func labelled(_ label: String, @ViewBuilder content: () -> some View) -> some View {
@@ -426,18 +432,21 @@ struct ReviewSheetView: View {
         guard let analysis else { return }
         guard title.isEmpty else { return } // already seeded
 
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd"
+
         title = analysis.title ?? item.displayTitle
         typeSlug = analysis.activityTypeSlug ?? ""
         if let cpd = analysis.cpdPoints {
             points = InboxView.points(cpd)
         }
-        if let iso = analysis.startsOn {
-            let parser = DateFormatter()
-            parser.dateFormat = "yyyy-MM-dd"
-            if let date = parser.date(from: iso) {
-                startsOn = date
-                hasDate = true
-            }
+        if let iso = analysis.startsOn, let date = parser.date(from: iso) {
+            startsOn = date
+            hasDate = true
+        }
+        if let iso = analysis.endsOn, let date = parser.date(from: iso), date != startsOn {
+            endsOn = date
+            hasEndDate = true
         }
         organisation = analysis.organisation ?? ""
         summary = analysis.summary ?? ""
@@ -447,7 +456,32 @@ struct ReviewSheetView: View {
         projectIds = Set(analysis.suggestedProjectIds ?? [])
     }
 
-    private func approve() {
+    /// Approve → the confirm sheet when a sensitive-info flag or keep-file
+    /// question is waiting; straight through otherwise.
+    private func approveTapped() {
+        if item.piiGate == true || asksAboutFiles {
+            confirmingSave = true
+            return
+        }
+        submitApprove(keepIds: [], piiAck: false)
+    }
+
+    /// Text-only sensitive info: scrub it server-side, then approve.
+    private func removeInfoAndApprove() {
+        isWorking = true
+        Task {
+            do {
+                _ = try await session.api.removePii(id: item.id)
+                submitApprove(keepIds: [], piiAck: false)
+            } catch {
+                isWorking = false
+                errorMessage = error.localizedDescription
+                confirmingSave = false
+            }
+        }
+    }
+
+    private func submitApprove(keepIds: [Int], piiAck: Bool) {
         isWorking = true
         errorMessage = nil
         Task {
@@ -459,7 +493,7 @@ struct ReviewSheetView: View {
                     title: title,
                     activityTypeSlug: typeSlug,
                     startsOn: hasDate ? formatter.string(from: startsOn) : nil,
-                    endsOn: nil,
+                    endsOn: hasDate && hasEndDate ? formatter.string(from: endsOn) : nil,
                     organisation: organisation.isEmpty ? nil : organisation,
                     cpdPoints: Double(points.replacingOccurrences(of: ",", with: ".")) ?? 0,
                     summary: summary.isEmpty ? nil : summary,
@@ -469,8 +503,8 @@ struct ReviewSheetView: View {
                     attributeCodes: analysis?.attributeCodes,
                     projectIds: Array(projectIds),
                     linkedActivityIds: nil,
-                    keepAttachmentIds: Array(keepAttachmentIds),
-                    piiAck: item.piiGate == true ? piiAcknowledged : nil
+                    keepAttachmentIds: keepIds,
+                    piiAck: item.piiGate == true ? piiAck : nil
                 )
                 try await session.api.approve(id: item.id, payload: payload)
                 onResolved()
@@ -480,10 +514,22 @@ struct ReviewSheetView: View {
                 onResolved()
                 dismiss()
             } catch let error as APIError where error.fieldErrors["pii"] != nil {
+                confirmingSave = false
                 errorMessage = error.fieldErrors["pii"]?.first ?? error.message
             } catch {
+                confirmingSave = false
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func retry() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            try? await session.api.retry(id: item.id)
+            onResolved()
+            dismiss()
         }
     }
 

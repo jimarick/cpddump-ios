@@ -30,8 +30,7 @@ struct MergeSheetView: View {
     @State private var domainCodes: Set<String> = []
     @State private var projectIds: Set<Int> = []
     @State private var attributeCodes: [String] = []
-    @State private var keepAttachmentIds: Set<Int> = []
-    @State private var piiAcks: Set<Int> = []
+    @State private var confirmingSave = false
 
     // The AI-drafted combined entry (title/type/org/details/reflections)
     private enum AiState { case pending, applied, undone, failed }
@@ -53,7 +52,7 @@ struct MergeSheetView: View {
     private var reference: Reference? { session.reference }
 
     private var gatedSources: [MergePreview.Source] {
-        (preview?.sources ?? []).filter { $0.piiGate == true && !piiAcks.contains($0.id) }
+        (preview?.sources ?? []).filter { $0.piiGate == true }
     }
 
     var body: some View {
@@ -106,6 +105,28 @@ struct MergeSheetView: View {
             await session.loadReference()
             await loadPreview()
             await loadDraft()
+        }
+        .sheet(isPresented: $confirmingSave) {
+            ApproveConfirmSheet(
+                files: keepableFiles,
+                flags: gatedSources.flatMap { source in
+                    (source.piiFlags ?? []).map {
+                        SensitiveFlag(type: $0.type, excerpt: nil)
+                    }
+                },
+                flagLocation: !gatedSources.isEmpty && keepableFiles.isEmpty
+                    ? "the merged items' text"
+                    : nil,
+                verb: "Merge",
+                isWorking: isWorking,
+                onConfirm: { keepIds, piiAck in
+                    submitMerge(keepIds: keepIds, piiAcks: piiAck ? gatedSources.map(\.id) : [])
+                },
+                onRemoveInfo: !gatedSources.isEmpty && keepableFiles.isEmpty
+                    ? { removeInfoAndMerge() }
+                    : nil,
+                onCancel: { confirmingSave = false }
+            )
         }
     }
 
@@ -188,10 +209,6 @@ struct MergeSheetView: View {
 
     private var fields: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if !gatedSources.isEmpty {
-                piiBoxes
-            }
-
             labelled("Title") {
                 TextField("Title", text: $title, axis: .vertical)
             }
@@ -228,17 +245,9 @@ struct MergeSheetView: View {
                 }
             }
 
-            labelled("Organisation") {
-                TextField("Optional", text: $organisation)
-            }
-
             labelled("Summary") {
                 TextField("What happened?", text: $summary, axis: .vertical)
                     .lineLimit(3 ... 8)
-            }
-
-            if preview?.retention == "ask" || preview?.retention == nil {
-                keepFiles
             }
 
             aiBanner
@@ -271,64 +280,15 @@ struct MergeSheetView: View {
         }
     }
 
-    private var keepFiles: some View {
-        let keepable = (preview?.sources ?? []).flatMap { source in
+    /// Keepable files across all sources, attributed to their entry.
+    private var keepableFiles: [ConfirmFile] {
+        guard preview?.retention == "ask" || preview?.retention == nil else { return [] }
+
+        return (preview?.sources ?? []).flatMap { source in
             source.attachments
                 .filter { $0.keepable == true }
-                .map { (attachment: $0, from: source.title) }
+                .map { ConfirmFile(id: $0.id, name: $0.name ?? "File \($0.id)", from: source.title) }
         }
-
-        return Group {
-            if !keepable.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    FieldLabel(text: "Keep the files with the merged entry?")
-                    Text("Unticked files are deleted when you merge — the written entry is kept either way.")
-                        .font(PaperInk.sans(12))
-                        .foregroundStyle(PaperInk.stone500)
-                    FlowLayout(spacing: 8) {
-                        ForEach(keepable, id: \.attachment.id) { pair in
-                            toggleChip(
-                                pair.attachment.name ?? "File \(pair.attachment.id)",
-                                isOn: keepAttachmentIds.contains(pair.attachment.id)
-                            ) {
-                                toggle(&keepAttachmentIds, pair.attachment.id)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var piiBoxes: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Possible sensitive information", systemImage: "exclamationmark.shield.fill")
-                .font(PaperInk.sans(13, weight: .heavy))
-                .foregroundStyle(.red)
-
-            ForEach(gatedSources) { source in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("“\(source.title)” — \((source.piiFlags ?? []).map { $0.type.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", "))")
-                        .font(PaperInk.sans(12, weight: .semibold))
-
-                    HStack(spacing: 8) {
-                        Button("Remove sensitive info") { removePii(source.id) }
-                            .font(PaperInk.sans(12, weight: .bold))
-                            .foregroundStyle(PaperInk.ink)
-                            .disabled(isWorking)
-
-                        toggleChip("Keep — I've checked", isOn: false) {
-                            piiAcks.insert(source.id)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.red.opacity(0.5), lineWidth: 1.5))
     }
 
     @ViewBuilder
@@ -375,9 +335,9 @@ struct MergeSheetView: View {
                     .multilineTextAlignment(.center)
             }
             HStack(spacing: 14) {
-                Button(isWorking ? "Merging…" : "Merge into one entry") { merge() }
+                Button(isWorking ? "Merging…" : "Merge into one entry") { mergeTapped() }
                     .buttonStyle(InkButtonStyle(prominent: true))
-                    .disabled(isWorking || title.isEmpty || typeSlug.isEmpty || !gatedSources.isEmpty)
+                    .disabled(isWorking || title.isEmpty || typeSlug.isEmpty)
 
                 Button("Cancel") { dismiss() }
                     .font(PaperInk.sans(14, weight: .bold))
@@ -528,20 +488,35 @@ struct MergeSheetView: View {
         if let draft = aiDraft { applyDraft(draft) }
     }
 
-    private func removePii(_ itemId: Int) {
+    /// Merge → the confirm sheet when a sensitive-info flag or keep-file
+    /// question is waiting; straight through otherwise.
+    private func mergeTapped() {
+        if !gatedSources.isEmpty || !keepableFiles.isEmpty {
+            confirmingSave = true
+            return
+        }
+        submitMerge(keepIds: [], piiAcks: [])
+    }
+
+    /// Text-only sensitive info: scrub every gated source server-side,
+    /// then merge with nothing to acknowledge.
+    private func removeInfoAndMerge() {
         isWorking = true
         Task {
-            defer { isWorking = false }
             do {
-                _ = try await session.api.removePii(id: itemId)
-                await loadPreview()
+                for source in gatedSources {
+                    _ = try await session.api.removePii(id: source.id)
+                }
+                submitMerge(keepIds: [], piiAcks: [])
             } catch {
+                isWorking = false
                 errorMessage = error.localizedDescription
+                confirmingSave = false
             }
         }
     }
 
-    private func merge() {
+    private func submitMerge(keepIds: [Int], piiAcks: [Int]) {
         isWorking = true
         errorMessage = nil
         Task {
@@ -561,15 +536,17 @@ struct MergeSheetView: View {
                     domainCodes: Array(domainCodes),
                     attributeCodes: attributeCodes,
                     projectIds: Array(projectIds),
-                    keepAttachmentIds: Array(keepAttachmentIds),
-                    piiAcks: Array(piiAcks)
+                    keepAttachmentIds: keepIds,
+                    piiAcks: piiAcks
                 )
                 _ = try await session.api.merge(payload: payload)
                 onMerged()
                 dismiss()
             } catch let error as APIError where error.fieldErrors["pii"] != nil {
+                confirmingSave = false
                 errorMessage = error.fieldErrors["pii"]?.first ?? error.message
             } catch {
+                confirmingSave = false
                 errorMessage = error.localizedDescription
             }
         }
