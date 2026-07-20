@@ -4,6 +4,7 @@ import SwiftUI
 final class TimelineModel {
     var activities: [ActivitySummary] = []
     var period: AppraisalPeriod?
+    var stats: StatsResponse.Stats?
     var page = 1
     var lastPage = 1
     var isLoading = false
@@ -15,7 +16,9 @@ final class TimelineModel {
         }
         isLoading = true
         do {
+            async let statsResponse = session.api.stats()
             let result = try await session.api.activities(page: page)
+            stats = try? await statsResponse.stats
             period = result.period
             lastPage = result.meta.lastPage
             if page == 1 {
@@ -161,25 +164,56 @@ struct TimelineView: View {
         ScrollView {
             LazyVStack(spacing: 10) {
                 ForEach(model.activities) { activity in
-                    if selecting {
-                        Button {
-                            toggleSelection(activity.id)
-                        } label: {
-                            row(activity)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        NavigationLink(value: activity) {
-                            row(activity)
-                        }
-                        .buttonStyle(.plain)
-                        .task { await model.loadMoreIfNeeded(session, current: activity) }
-                    }
+                    rowOrSelectRow(activity)
                 }
             }
             .padding(14)
+            // Room so the last rows can scroll clear of the floating pill.
+            .padding(.bottom, 44)
         }
         .refreshable { await model.load(session, reset: true) }
+        .overlay(alignment: .bottom) {
+            if !selecting, let stats = model.stats {
+                summaryPill(stats)
+            }
+        }
+    }
+
+    /// Slim always-visible period summary — rows scroll behind it.
+    private func summaryPill(_ stats: StatsResponse.Stats) -> some View {
+        (Text(InboxView.points(stats.points)).fontWeight(.heavy).foregroundColor(PaperInk.brand)
+            + Text(" CPD points this year · ")
+            + Text("\(stats.activities)").fontWeight(.heavy)
+            + Text(stats.activities == 1 ? " activity" : " activities"))
+            .font(PaperInk.sans(12.5))
+            .foregroundStyle(PaperInk.stone600)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.white.opacity(0.94))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(PaperInk.ink, lineWidth: 2))
+            .stickerShadow()
+            .tilt(-0.5)
+            .padding(.bottom, 8)
+            .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func rowOrSelectRow(_ activity: ActivitySummary) -> some View {
+        if selecting {
+            Button {
+                toggleSelection(activity.id)
+            } label: {
+                row(activity)
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink(value: activity) {
+                row(activity)
+            }
+            .buttonStyle(.plain)
+            .task { await model.loadMoreIfNeeded(session, current: activity) }
+        }
     }
 
     private func toggleSelection(_ id: Int) {
