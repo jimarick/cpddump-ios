@@ -466,10 +466,12 @@ struct MergeSheetView: View {
             reflection = defaults.reflection ?? [:]
         }
 
-        // The AI combine already landed — apply it now.
+        // The AI combine already landed — apply it now. AI answers layer
+        // OVER the stitched defaults: a key the AI left empty keeps its
+        // concatenated sources.
         if aiState == .pending, let combined = aiReflection {
             preAiReflection = reflection
-            reflection = combined
+            reflection = reflection.merging(combined) { _, ai in ai }
             aiState = .applied
         }
     }
@@ -484,7 +486,7 @@ struct MergeSheetView: View {
             aiReflection = combined
             if preview != nil, aiState == .pending {
                 preAiReflection = reflection
-                reflection = combined
+                reflection = reflection.merging(combined) { _, ai in ai }
                 aiState = .applied
             }
         } catch {
@@ -499,7 +501,7 @@ struct MergeSheetView: View {
 
     private func redoAi() {
         if let combined = aiReflection {
-            reflection = combined
+            reflection = (preAiReflection ?? reflection).merging(combined) { _, ai in ai }
             aiState = .applied
         }
     }
