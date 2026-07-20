@@ -1,0 +1,228 @@
+import Foundation
+
+/// Errors surfaced to the UI with the server's own message where possible.
+struct APIError: LocalizedError {
+    var status: Int
+    var message: String
+    /// Laravel validation errors keyed by field.
+    var fieldErrors: [String: [String]] = [:]
+
+    var errorDescription: String? { message }
+
+    var needsTwoFactorCode: Bool {
+        status == 422 && fieldErrors.keys.contains("code")
+    }
+}
+
+extension Error {
+    /// SwiftUI cancels `.task` / `.refreshable` work whenever view identity
+    /// changes mid-flight; the resulting errors ("cancelled") are noise,
+    /// not failures to show the user.
+    var isCancellation: Bool {
+        self is CancellationError || (self as? URLError)?.code == .cancelled
+    }
+}
+
+/// Thin async client for the CPD Dump companion API (`/api/v1`).
+struct APIClient {
+    var baseURL: URL
+    var token: String?
+
+    private var apiRoot: URL { baseURL.appending(path: "api/v1") }
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    private static let encoder = JSONEncoder()
+
+    // MARK: Auth
+
+    func requestToken(email: String, password: String, code: String?, deviceName: String) async throws -> TokenResponse {
+        var body: [String: String] = ["email": email, "password": password, "device_name": deviceName]
+        if let code, !code.isEmpty { body["code"] = code }
+        return try await send("POST", "auth/token", json: body)
+    }
+
+    func revokeToken() async throws {
+        try await sendIgnoringBody("DELETE", "auth/token")
+    }
+
+    func me() async throws -> UserPayload {
+        struct Wrapper: Codable { var user: UserPayload }
+        let wrapper: Wrapper = try await send("GET", "user")
+        return wrapper.user
+    }
+
+    // MARK: Inbox
+
+    func inboxItems() async throws -> [InboxItem] {
+        struct Wrapper: Codable { var items: [InboxItem] }
+        let wrapper: Wrapper = try await send("GET", "inbox-items")
+        return wrapper.items
+    }
+
+    func inboxItem(id: Int) async throws -> InboxItem {
+        struct Wrapper: Codable { var item: InboxItem }
+        let wrapper: Wrapper = try await send("GET", "inbox-items/\(id)")
+        return wrapper.item
+    }
+
+    func approve(id: Int, payload: ApprovePayload) async throws {
+        _ = try await raw("POST", "inbox-items/\(id)/approve", body: try Self.encoder.encode(payload))
+    }
+
+    func dismiss(id: Int) async throws {
+        try await sendIgnoringBody("DELETE", "inbox-items/\(id)")
+    }
+
+    func retry(id: Int) async throws {
+        try await sendIgnoringBody("POST", "inbox-items/\(id)/retry")
+    }
+
+    // MARK: Timeline
+
+    func activities(page: Int = 1, periodId: Int? = nil) async throws -> ActivitiesPage {
+        var query = [URLQueryItem(name: "page", value: String(page))]
+        if let periodId { query.append(URLQueryItem(name: "period", value: String(periodId))) }
+        return try await send("GET", "activities", query: query)
+    }
+
+    func activity(id: Int) async throws -> ActivityDetail {
+        struct Wrapper: Codable { var activity: ActivityDetail }
+        let wrapper: Wrapper = try await send("GET", "activities/\(id)")
+        return wrapper.activity
+    }
+
+    // MARK: Reference & stats
+
+    func reference() async throws -> Reference {
+        try await send("GET", "reference")
+    }
+
+    func stats() async throws -> StatsResponse {
+        try await send("GET", "stats")
+    }
+
+    // MARK: Push
+
+    func registerPushToken(_ token: String, deviceName: String) async throws {
+        _ = try await raw("POST", "push-tokens", json: [
+            "token": token,
+            "platform": "ios",
+            "device_name": deviceName,
+        ])
+    }
+
+    // MARK: AI assist
+
+    func textAssist(field: String, text: String?, context: String?) async throws -> String {
+        struct Wrapper: Codable { var text: String }
+        var body: [String: String] = ["field": field]
+        if let text, !text.isEmpty { body["text"] = text }
+        if let context, !context.isEmpty { body["context"] = context }
+        let wrapper: Wrapper = try await send("POST", "ai/text-assist", json: body)
+        return wrapper.text
+    }
+
+    func transcribe(audioFile: URL) async throws -> String {
+        struct Wrapper: Codable { var text: String }
+        let audio = try Data(contentsOf: audioFile)
+        let multipart = MultipartBody()
+        multipart.addFile(name: "audio", filename: audioFile.lastPathComponent, mimeType: "audio/mp4", data: audio)
+        let wrapper: Wrapper = try await send("POST", "ai/transcribe", body: multipart.encoded(), contentType: multipart.contentType)
+        return wrapper.text
+    }
+
+    // MARK: Core request machinery
+
+    private func send<Response: Decodable>(
+        _ method: String,
+        _ path: String,
+        query: [URLQueryItem] = [],
+        json: [String: String]? = nil,
+        body: Data? = nil,
+        contentType: String = "application/json"
+    ) async throws -> Response {
+        let data = try await raw(method, path, query: query, json: json, body: body, contentType: contentType)
+        return try Self.decoder.decode(Response.self, from: data)
+    }
+
+    private func sendIgnoringBody(_ method: String, _ path: String) async throws {
+        _ = try await raw(method, path)
+    }
+
+    private func raw(
+        _ method: String,
+        _ path: String,
+        query: [URLQueryItem] = [],
+        json: [String: String]? = nil,
+        body: Data? = nil,
+        contentType: String = "application/json"
+    ) async throws -> Data {
+        var url = apiRoot.appending(path: path)
+        if !query.isEmpty { url.append(queryItems: query) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        if let json {
+            request.httpBody = try JSONSerialization.data(withJSONObject: json)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        } else if let body {
+            request.httpBody = body
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+        guard (200 ..< 300).contains(status) else {
+            throw Self.error(from: data, status: status)
+        }
+        return data
+    }
+
+    private static func error(from data: Data, status: Int) -> APIError {
+        struct LaravelError: Codable {
+            var message: String?
+            var errors: [String: [String]]?
+        }
+        if let parsed = try? JSONDecoder().decode(LaravelError.self, from: data) {
+            return APIError(
+                status: status,
+                message: parsed.message ?? "Something went wrong (\(status)).",
+                fieldErrors: parsed.errors ?? [:]
+            )
+        }
+        if status == 401 { return APIError(status: status, message: "Signed out — please sign in again.") }
+        return APIError(status: status, message: "Something went wrong (\(status)).")
+    }
+}
+
+/// Builds multipart/form-data bodies (files + fields).
+final class MultipartBody {
+    private let boundary = "cpddump-\(UUID().uuidString)"
+    private var data = Data()
+
+    var contentType: String { "multipart/form-data; boundary=\(boundary)" }
+
+    func addField(name: String, value: String) {
+        data.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+    }
+
+    func addFile(name: String, filename: String, mimeType: String, data fileData: Data) {
+        data.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: \(mimeType)\r\n\r\n".utf8))
+        data.append(fileData)
+        data.append(Data("\r\n".utf8))
+    }
+
+    func encoded() -> Data {
+        data + Data("--\(boundary)--\r\n".utf8)
+    }
+}
