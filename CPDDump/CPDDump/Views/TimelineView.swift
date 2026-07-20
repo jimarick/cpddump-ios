@@ -80,12 +80,15 @@ struct TimelineView: View {
                 }
                 if !model.activities.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
+                        // Plain text like the inbox's Select — no system
+                        // button chrome around it.
                         Button(selecting ? "Done" : "Select") {
                             withAnimation(.snappy) {
                                 selecting.toggle()
                                 selectedIds = []
                             }
                         }
+                        .buttonStyle(.plain)
                         .font(PaperInk.sans(13, weight: .bold))
                         .foregroundStyle(PaperInk.brandDark)
                     }
@@ -182,7 +185,7 @@ struct TimelineView: View {
             }
             .padding(14)
             // Room so the last rows can scroll clear of the floating pill.
-            .padding(.bottom, 44)
+            .padding(.bottom, 76)
         }
         .refreshable { await model.load(session, reset: true) }
         .overlay(alignment: .bottom) {
@@ -193,8 +196,9 @@ struct TimelineView: View {
     }
 
     private func summaryPill(_ stats: StatsResponse.Stats) -> some View {
+        // Sits at the same screen height as the inbox pill.
         StatsSummaryPill(stats: stats)
-            .padding(.bottom, 8)
+            .padding(.bottom, 40)
     }
 
     @ViewBuilder
