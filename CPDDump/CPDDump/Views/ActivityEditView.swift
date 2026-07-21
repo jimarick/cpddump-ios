@@ -99,6 +99,17 @@ struct ActivityEditView: View {
                         }
                     }
 
+                    // Web order: facts, categorisation, then the whole
+                    // reflection block, takeaways last.
+                    if let categories = reference?.categories, !categories.isEmpty {
+                        chipPicker("Categories", items: categories.map { ($0.slug, $0.name) }, selection: $categorySlugs)
+                    }
+                    if let domains = reference?.domains, !domains.isEmpty {
+                        chipPicker("Domains", items: domains.map { ($0.code, "\($0.code) · \($0.name)") }, selection: $domainCodes)
+                    }
+
+                    Text("Reflection").display(18)
+
                     labelled("Details") {
                         TextField("What happened?", text: $summary, axis: .vertical)
                             .lineLimit(4 ... 10)
@@ -111,11 +122,16 @@ struct ActivityEditView: View {
                         talk: $talk
                     )
 
-                    if let categories = reference?.categories, !categories.isEmpty {
-                        chipPicker("Categories", items: categories.map { ($0.slug, $0.name) }, selection: $categorySlugs)
-                    }
-                    if let domains = reference?.domains, !domains.isEmpty {
-                        chipPicker("Domains", items: domains.map { ($0.code, "\($0.code) · \($0.name)") }, selection: $domainCodes)
+                    // Takeaways aren't edited here (that's the Takeaways
+                    // tab) — shown read-only for context.
+                    if !activity.nuggets.isEmpty || !activity.actions.isEmpty {
+                        DashedDivider()
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            FieldLabel(text: "Takeaways")
+                            ForEach(activity.nuggets) { takeawayBullet($0, accent: false) }
+                            ForEach(activity.actions) { takeawayBullet($0, accent: true) }
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -158,6 +174,18 @@ struct ActivityEditView: View {
     }
 
     // MARK: Helpers
+
+    private func takeawayBullet(_ item: Takeaway, accent: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("•")
+                .font(PaperInk.sans(15, weight: .heavy))
+                .foregroundStyle(accent ? PaperInk.brand : PaperInk.ink)
+            Text(item.text)
+                .font(PaperInk.sans(14))
+                .strikethrough(item.done)
+                .foregroundStyle(item.done ? PaperInk.stone500 : PaperInk.ink)
+        }
+    }
 
     private var typeName: String {
         reference?.activityTypes.first { $0.slug == typeSlug }?.name ?? "Choose…"

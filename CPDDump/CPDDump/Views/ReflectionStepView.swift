@@ -25,8 +25,6 @@ struct ReflectionStepView: View {
     @Binding var answers: [String: String]
     var assistContext: String
     @Binding var talk: ReflectionTalkState
-    /// The analyst's note on where a pre-filled reflection came from.
-    var reflectionSource: String?
     /// Vertical size of each answer box — the review wizard passes a
     /// taller range so the boxes read as writing spaces.
     var boxLineLimit: ClosedRange<Int> = 3 ... 10
@@ -248,11 +246,10 @@ struct ReflectionStepView: View {
 
     // MARK: Per-prompt boxes
 
+    /// Only the explicit shape action gets feedback — analyst provenance
+    /// banners are gone (the notes step makes provenance obvious).
     private var provenance: String? {
-        if talk.shaped {
-            return "Shaped from your dictation — edit anything, or tap a sparkle to redo one box."
-        }
-        return allEmpty ? nil : reflectionSource
+        talk.shaped ? "Shaped from your dictation — edit anything, or tap a sparkle to redo one box." : nil
     }
 
     private var boxesContent: some View {

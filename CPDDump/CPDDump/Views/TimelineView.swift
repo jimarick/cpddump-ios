@@ -437,6 +437,8 @@ struct ActivityDetailView: View {
     @State private var generatingTakeaways = false
     @State private var takeawaysError: String?
     @State private var showingTakeawaysHelp = false
+    /// Flip between the AI write-up and the verbatim debrief notes.
+    @State private var showingMyNotes = false
 
     var body: some View {
         ScrollView {
@@ -454,16 +456,30 @@ struct ActivityDetailView: View {
                             .foregroundStyle(PaperInk.stone500)
                     }
 
-                    if let details = activity.details, !details.isEmpty {
-                        section("Summary") { Text(details).font(PaperInk.sans(14)) }
+                    // Entries written from debrief notes carry both voices:
+                    // the AI write-up and the user's own words, verbatim.
+                    if let notes = activity.sourceNotes, !notes.isEmpty {
+                        writeUpToggle
                     }
 
-                    if let reflection = activity.reflection, !reflection.isEmpty {
-                        section("Reflection") {
-                            VStack(alignment: .leading, spacing: 10) {
-                                ForEach(reflection.keys.sorted(), id: \.self) { key in
-                                    if let answer = reflection[key] ?? nil, !answer.isEmpty {
-                                        Text(answer).font(PaperInk.sans(14))
+                    if showingMyNotes, let notes = activity.sourceNotes, !notes.isEmpty {
+                        section("My notes") {
+                            Text(notes)
+                                .font(PaperInk.sans(14))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        if let details = activity.details, !details.isEmpty {
+                            section("Summary") { Text(details).font(PaperInk.sans(14)) }
+                        }
+
+                        if let reflection = activity.reflection, !reflection.isEmpty {
+                            section("Reflection") {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(reflection.keys.sorted(), id: \.self) { key in
+                                        if let answer = reflection[key] ?? nil, !answer.isEmpty {
+                                            Text(answer).font(PaperInk.sans(14))
+                                        }
                                     }
                                 }
                             }
@@ -483,6 +499,8 @@ struct ActivityDetailView: View {
                             }
                         }
                     }
+
+                    DashedDivider()
 
                     takeawaysSection(activity)
 
@@ -666,6 +684,35 @@ struct ActivityDetailView: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    /// Pill segmented toggle between the AI write-up and the verbatim
+    /// debrief notes.
+    private var writeUpToggle: some View {
+        HStack(spacing: 3) {
+            writeUpSegment("AI write-up", active: !showingMyNotes) { showingMyNotes = false }
+            writeUpSegment("My notes", active: showingMyNotes) { showingMyNotes = true }
+        }
+        .padding(3)
+        .background(PaperInk.paperAlt)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(PaperInk.ink.opacity(0.25), lineWidth: 1.5))
+    }
+
+    private func writeUpSegment(_ label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.snappy) { action() }
+        } label: {
+            Text(label)
+                .font(PaperInk.sans(12, weight: .bold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(active ? .white : .clear)
+                .foregroundStyle(active ? PaperInk.ink : PaperInk.stone500)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(active ? PaperInk.ink : .clear, lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
     }
 
     /// Takeaways are opt-in per activity: entries without any get a
