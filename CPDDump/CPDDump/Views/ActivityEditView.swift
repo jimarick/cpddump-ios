@@ -47,45 +47,58 @@ struct ActivityEditView: View {
                         TextField("Title", text: $title, axis: .vertical)
                     }
 
-                    HStack(alignment: .top, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            FieldLabel(text: "Type")
-                            Menu {
-                                ForEach(reference?.activityTypes ?? []) { type in
-                                    Button(type.name) { typeSlug = type.slug }
-                                }
-                            } label: {
-                                HStack {
-                                    Text(typeName).font(PaperInk.sans(14)).foregroundStyle(PaperInk.ink)
-                                    Spacer()
-                                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)).foregroundStyle(PaperInk.stone500)
-                                }
-                                .boxed()
-                            }
-                        }
-                        labelled("CPD points") {
-                            TextField("1", text: $points)
-                                .keyboardType(.decimalPad)
-                        }
-                        .frame(width: 100)
-                    }
-
-                    HStack(alignment: .top, spacing: 10) {
-                        labelled("From") {
+                    // Single-column, same order as the review sheet:
+                    // Dates, Points, Type, Project, Details. No
+                    // Organisation input — the value still rides in the
+                    // payload untouched.
+                    VStack(alignment: .leading, spacing: 4) {
+                        FieldLabel(text: "Dates")
+                        HStack(spacing: 6) {
                             TextField("YYYY-MM-DD", text: $startsOn)
-                        }
-                        labelled("To") {
+                                .font(PaperInk.sans(14))
+                                .boxed()
+                            Text("→").foregroundStyle(PaperInk.stone400)
                             TextField("YYYY-MM-DD", text: $endsOn)
+                                .font(PaperInk.sans(14))
+                                .boxed()
                         }
                     }
 
-                    labelled("Organisation") {
-                        TextField("Optional", text: $organisation)
+                    VStack(alignment: .leading, spacing: 4) {
+                        FieldLabel(text: "Points")
+                        TextField("1", text: $points)
+                            .keyboardType(.decimalPad)
+                            .font(PaperInk.sans(14))
+                            .boxed()
+                            .frame(width: 110)
                     }
 
-                    labelled("Summary") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        FieldLabel(text: "Type")
+                        Menu {
+                            ForEach(reference?.activityTypes ?? []) { type in
+                                Button(type.name) { typeSlug = type.slug }
+                            }
+                        } label: {
+                            menuLabel(typeName)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        FieldLabel(text: "Project / goal")
+                        Menu {
+                            Button("None") { projectIds = [] }
+                            ForEach(reference?.projects ?? []) { project in
+                                Button(project.title) { projectIds = [project.id] }
+                            }
+                        } label: {
+                            menuLabel(projectName)
+                        }
+                    }
+
+                    labelled("Details") {
                         TextField("What happened?", text: $summary, axis: .vertical)
-                            .lineLimit(3 ... 8)
+                            .lineLimit(4 ... 10)
                     }
 
                     ReflectionStepView(
@@ -100,18 +113,6 @@ struct ActivityEditView: View {
                     }
                     if let domains = reference?.domains, !domains.isEmpty {
                         chipPicker("Domains", items: domains.map { ($0.code, "\($0.code) · \($0.name)") }, selection: $domainCodes)
-                    }
-                    if let projects = reference?.projects, !projects.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            FieldLabel(text: "Projects")
-                            FlowLayout(spacing: 8) {
-                                ForEach(projects) { project in
-                                    toggleChip(project.title, isOn: projectIds.contains(project.id)) {
-                                        toggle(&projectIds, project.id)
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -157,6 +158,25 @@ struct ActivityEditView: View {
 
     private var typeName: String {
         reference?.activityTypes.first { $0.slug == typeSlug }?.name ?? "Choose…"
+    }
+
+    private var projectName: String {
+        guard let id = projectIds.first else { return "None" }
+        return reference?.projects.first { $0.id == id }?.title ?? "None"
+    }
+
+    private func menuLabel(_ text: String) -> some View {
+        HStack {
+            Text(text)
+                .font(PaperInk.sans(14))
+                .foregroundStyle(PaperInk.ink)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10))
+                .foregroundStyle(PaperInk.stone500)
+        }
+        .boxed()
     }
 
     private func labelled(_ label: String, @ViewBuilder content: () -> some View) -> some View {

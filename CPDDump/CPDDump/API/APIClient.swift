@@ -74,8 +74,17 @@ struct APIClient {
         _ = try await raw("POST", "inbox-items/\(id)/approve", body: try Self.encoder.encode(payload))
     }
 
-    func dismiss(id: Int) async throws {
-        try await sendIgnoringBody("DELETE", "inbox-items/\(id)")
+    /// Bin an item; optionally leave an ignore rule so items whose title
+    /// contains the given text never appear again.
+    func dismiss(id: Int, neverAgainTitle: String? = nil) async throws {
+        if let value = neverAgainTitle, !value.isEmpty {
+            let body = try JSONSerialization.data(withJSONObject: [
+                "ignore_rule": ["field": "title", "operator": "contains", "value": value],
+            ])
+            _ = try await raw("DELETE", "inbox-items/\(id)", body: body)
+        } else {
+            try await sendIgnoringBody("DELETE", "inbox-items/\(id)")
+        }
     }
 
     func retry(id: Int) async throws {
@@ -148,6 +157,27 @@ struct APIClient {
         return wrapper.activity
     }
 
+    /// Post-approval remedy: purge stored files to stubs and scrub
+    /// identifiers from the entry's text — the entry itself is kept.
+    func removeActivityPii(id: Int) async throws -> ActivityDetail {
+        struct Wrapper: Codable { var activity: ActivityDetail }
+        let wrapper: Wrapper = try await send("POST", "activities/\(id)/remove-pii")
+        return wrapper.activity
+    }
+
+    /// Download an evidence file (streamed with the bearer token) into a
+    /// temporary file named for QuickLook to preview.
+    func downloadAttachment(id: Int, suggestedName: String?) async throws -> URL {
+        let data = try await raw("GET", "attachments/\(id)")
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "attachments", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = (suggestedName?.isEmpty == false ? suggestedName! : "attachment-\(id)")
+        let url = directory.appending(path: name)
+        try data.write(to: url)
+        return url
+    }
+
     /// Deletes a kept evidence file. The attachment survives server-side as
     /// an honest "not kept" stub — the written entry is untouched.
     func deleteAttachment(id: Int) async throws {
@@ -160,8 +190,10 @@ struct APIClient {
         try await send("GET", "reference")
     }
 
-    func stats() async throws -> StatsResponse {
-        try await send("GET", "stats")
+    func stats(periodId: Int? = nil) async throws -> StatsResponse {
+        var query: [URLQueryItem] = []
+        if let periodId { query.append(URLQueryItem(name: "period", value: String(periodId))) }
+        return try await send("GET", "stats", query: query)
     }
 
     // MARK: Push

@@ -43,6 +43,8 @@ struct ReviewSheetView: View {
 
     @State private var confirmingSave = false
     @State private var confirmingBin = false
+    @State private var showingPicker = false
+    @State private var previewFile: PreviewFile?
     @State private var isWorking = false
     @State private var errorMessage: String?
 
@@ -102,9 +104,26 @@ struct ReviewSheetView: View {
             titleVisibility: .visible
         ) {
             Button("Bin it", role: .destructive) { bin() }
+            if item.source == "email" || item.source == "calendar" {
+                Button("Bin & never show items like this", role: .destructive) {
+                    bin(neverAgain: true)
+                }
+            }
             Button("Keep it", role: .cancel) {}
         } message: {
             Text("Binned means deleted — the draft and any files are gone for good.")
+        }
+        .sheet(isPresented: $showingPicker) {
+            MergePickerSheet(
+                baseLabel: title.isEmpty ? item.displayTitle : title,
+                baseItemId: item.id
+            ) { seed in
+                onMergeInstead?(seed)
+                dismiss()
+            }
+        }
+        .sheet(item: $previewFile) { file in
+            AttachmentQuickLook(url: file.url)
         }
         .sheet(isPresented: $confirmingSave) {
             ApproveConfirmSheet(
@@ -224,6 +243,22 @@ struct ReviewSheetView: View {
             labelled("Details") {
                 TextField("What happened, in your own words?", text: $summary, axis: .vertical)
                     .lineLimit(4 ... 10)
+            }
+
+            if !item.attachments.isEmpty {
+                AttachmentChips(attachments: item.attachments, preview: $previewFile)
+            }
+
+            if onMergeInstead != nil {
+                Button {
+                    showingPicker = true
+                } label: {
+                    Text("Merge with another entry…")
+                        .font(PaperInk.sans(12, weight: .semibold))
+                        .foregroundStyle(PaperInk.stone500)
+                        .underline(true, pattern: .dash)
+                }
+                .buttonStyle(.plain)
             }
 
             sparkline(confidenceNote)
@@ -556,12 +591,15 @@ struct ReviewSheetView: View {
         }
     }
 
-    private func bin() {
+    private func bin(neverAgain: Bool = false) {
         isWorking = true
         Task {
             defer { isWorking = false }
             do {
-                try await session.api.dismiss(id: item.id)
+                try await session.api.dismiss(
+                    id: item.id,
+                    neverAgainTitle: neverAgain ? item.displayTitle : nil
+                )
                 onResolved()
                 dismiss()
             } catch let error as APIError where error.status == 404 {

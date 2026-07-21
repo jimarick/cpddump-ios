@@ -83,7 +83,7 @@ struct InboxItem: Codable, Identifiable {
     var failureReason: String?
     var createdAt: Date
     var attachments: [AttachmentRef]
-    /// Server gate: flagged patient info still held in a file or typed text.
+    /// Server gate: flagged personal info still held in a file or typed text.
     /// Approval then requires an explicit acknowledgement (`pii_ack`).
     var piiGate: Bool?
     /// Titled, current-period matches worth merging into — never enforced.

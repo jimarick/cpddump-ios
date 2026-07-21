@@ -5,6 +5,8 @@ final class TimelineModel {
     var activities: [ActivitySummary] = []
     var period: AppraisalPeriod?
     var stats: StatsResponse.Stats?
+    /// nil = the current appraisal year.
+    var selectedPeriodId: Int?
     var page = 1
     var lastPage = 1
     var isLoading = false
@@ -16,8 +18,8 @@ final class TimelineModel {
         }
         isLoading = true
         do {
-            async let statsResponse = session.api.stats()
-            let result = try await session.api.activities(page: page)
+            async let statsResponse = session.api.stats(periodId: selectedPeriodId)
+            let result = try await session.api.activities(page: page, periodId: selectedPeriodId)
             stats = try? await statsResponse.stats
             period = result.period
             lastPage = result.meta.lastPage
@@ -83,7 +85,10 @@ struct TimelineView: View {
                 if selecting { mergeBar }
             }
         }
-        .task { await model.load(session, reset: true) }
+        .task {
+            await session.loadReference()
+            await model.load(session, reset: true)
+        }
     }
 
     /// In-content header matching the inbox: big leading title, plain
@@ -92,11 +97,7 @@ struct TimelineView: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Timeline").display(32)
-                if let label = model.period?.label {
-                    Text(label)
-                        .font(PaperInk.sans(12, weight: .semibold))
-                        .foregroundStyle(PaperInk.stone500)
-                }
+                periodSwitcher
             }
 
             Spacer()
@@ -117,6 +118,45 @@ struct TimelineView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
         .padding(.top, 8)
+    }
+
+    /// The appraisal-year label doubles as a switcher — old years stay
+    /// one tap away, exactly like the web's dropdown.
+    @ViewBuilder
+    private var periodSwitcher: some View {
+        let periods = session.reference?.periods ?? []
+
+        if periods.count > 1 {
+            Menu {
+                ForEach(periods) { period in
+                    Button {
+                        model.selectedPeriodId = period.isCurrent == true ? nil : period.id
+                        Task { await model.load(session, reset: true) }
+                    } label: {
+                        if period.id == model.period?.id {
+                            Label(periodTitle(period), systemImage: "checkmark")
+                        } else {
+                            Text(periodTitle(period))
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(model.period?.label ?? "Year")
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .font(PaperInk.sans(12, weight: .semibold))
+                .foregroundStyle(PaperInk.stone500)
+            }
+        } else if let label = model.period?.label {
+            Text(label)
+                .font(PaperInk.sans(12, weight: .semibold))
+                .foregroundStyle(PaperInk.stone500)
+        }
+    }
+
+    private func periodTitle(_ period: AppraisalPeriod) -> String {
+        period.isCurrent == true ? "\(period.label) (current)" : period.label
     }
 
     /// At most one merged entry can join a stack — it becomes the target.
@@ -211,8 +251,11 @@ struct TimelineView: View {
     private func summaryPill(_ stats: StatsResponse.Stats) -> some View {
         // Both pages' containers end at the tab bar, so matching the
         // inbox's 26pt lift puts the pills at the same screen height.
-        StatsSummaryPill.period(stats)
-            .padding(.bottom, 26)
+        StatsSummaryPill.period(
+            stats,
+            periodLabel: model.period?.isCurrent == true ? nil : model.period?.label
+        )
+        .padding(.bottom, 26)
     }
 
     @ViewBuilder
@@ -310,11 +353,11 @@ struct TimelineView: View {
 struct StatsSummaryPill: View {
     var text: Text
 
-    /// Timeline flavour: points + activity count for the current year.
-    static func period(_ stats: StatsResponse.Stats) -> StatsSummaryPill {
+    /// Timeline flavour: points + activity count for the viewed year.
+    static func period(_ stats: StatsResponse.Stats, periodLabel: String? = nil) -> StatsSummaryPill {
         StatsSummaryPill(text:
             Text(InboxView.points(stats.points)).fontWeight(.heavy).foregroundColor(PaperInk.brand)
-                + Text(" CPD points this year · ")
+                + Text(periodLabel.map { " CPD points in \($0) · " } ?? " CPD points this year · ")
                 + Text("\(stats.activities)").fontWeight(.heavy)
                 + Text(stats.activities == 1 ? " activity" : " activities"))
     }
@@ -366,6 +409,10 @@ struct ActivityDetailView: View {
     @State private var errorMessage: String?
     @State private var confirmingSplit = false
     @State private var editing = false
+    @State private var showingPicker = false
+    @State private var mergeSeed: MergeSeed?
+    @State private var confirmingRemoveInfo = false
+    @State private var previewFile: PreviewFile?
     @State private var isWorking = false
     @State private var deletingAttachment: AttachmentRef?
 
@@ -416,33 +463,17 @@ struct ActivityDetailView: View {
                     }
 
                     if !activity.attachments.isEmpty {
+                        // Tap to preview; the ✕ deletes (kept files only).
                         section("Attachments") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(activity.attachments) { attachment in
-                                    HStack(spacing: 8) {
-                                        Label(attachment.name ?? "Attachment", systemImage: attachment.purged == true ? "doc.badge.ellipsis" : "paperclip")
-                                            .font(PaperInk.sans(13))
-                                            .foregroundStyle(PaperInk.stone600)
-                                            .strikethrough(attachment.purged == true, color: PaperInk.stone400)
-                                        if attachment.purged == true {
-                                            Text("not kept")
-                                                .font(PaperInk.sans(11))
-                                                .foregroundStyle(PaperInk.stone400)
-                                        } else {
-                                            Button {
-                                                deletingAttachment = attachment
-                                            } label: {
-                                                Image(systemName: "xmark.circle.fill")
-                                                    .font(.system(size: 14))
-                                                    .foregroundStyle(PaperInk.stone400)
-                                            }
-                                            .disabled(isWorking)
-                                        }
-                                    }
-                                }
-                            }
+                            AttachmentChips(
+                                attachments: activity.attachments,
+                                preview: $previewFile,
+                                onDelete: { deletingAttachment = $0 }
+                            )
                         }
                     }
+
+                    actions(activity)
 
                     Text("your paper trail — tidy it whenever you like")
                         .font(PaperInk.hand(19))
@@ -480,6 +511,39 @@ struct ActivityDetailView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
             }
+        }
+        .sheet(isPresented: $showingPicker) {
+            if let activity {
+                MergePickerSheet(
+                    baseLabel: activity.title,
+                    baseActivityId: activity.id,
+                    baseIsMerged: !activity.mergedFrom.isEmpty
+                ) { seed in
+                    mergeSeed = seed
+                }
+            }
+        }
+        .sheet(item: $mergeSeed) { seed in
+            MergeSheetView(initialSeed: seed) {
+                // This entry is now inside the merged one — back to the list.
+                onChanged?()
+                dismiss()
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.hidden)
+        }
+        .sheet(item: $previewFile) { file in
+            AttachmentQuickLook(url: file.url)
+        }
+        .confirmationDialog(
+            "Remove personal information?",
+            isPresented: $confirmingRemoveInfo,
+            titleVisibility: .visible
+        ) {
+            Button("Remove it", role: .destructive) { removeInfo() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Stored files are deleted and identifiers scrubbed from the text — your entry itself is kept.")
         }
         .confirmationDialog(
             "Delete “\(deletingAttachment?.name ?? "this file")”?",
@@ -546,6 +610,51 @@ struct ActivityDetailView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(PaperInk.stone400, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
         )
+    }
+
+    /// Quiet footer actions: merge this entry with others, or the
+    /// post-approval personal-information remedy.
+    private func actions(_ activity: ActivityDetail) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                showingPicker = true
+            } label: {
+                Text("Merge with another entry…")
+                    .font(PaperInk.sans(12, weight: .semibold))
+                    .foregroundStyle(PaperInk.stone500)
+                    .underline(true, pattern: .dash)
+            }
+            .buttonStyle(.plain)
+
+            if activity.attachments.contains(where: { $0.purged != true })
+                || !(activity.reflection ?? [:]).isEmpty
+                || !(activity.details ?? "").isEmpty {
+                Button {
+                    confirmingRemoveInfo = true
+                } label: {
+                    Text("Spotted personal info in this entry? Remove it")
+                        .font(PaperInk.sans(12, weight: .semibold))
+                        .foregroundStyle(PaperInk.stone500)
+                        .underline(true, pattern: .dash)
+                }
+                .buttonStyle(.plain)
+                .disabled(isWorking)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func removeInfo() {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                activity = try await session.api.removeActivityPii(id: activityId)
+                onChanged?()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func split() {

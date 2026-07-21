@@ -47,7 +47,7 @@ struct ApproveConfirmSheet: View {
 
             if hasFlags {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Possible sensitive info", systemImage: "exclamationmark.triangle.fill")
+                    Label("Possible personal info", systemImage: "exclamationmark.triangle.fill")
                         .font(PaperInk.sans(13, weight: .heavy))
                         .foregroundStyle(PaperInk.brandDark)
 
@@ -112,7 +112,7 @@ struct ApproveConfirmSheet: View {
                     .disabled(isWorking || keepIds.isEmpty)
                 } else {
                     if let onRemoveInfo {
-                        Button(isWorking ? "Saving…" : "Remove sensitive info & \(verb.lowercased())") {
+                        Button(isWorking ? "Saving…" : "Remove personal info & \(verb.lowercased())") {
                             onRemoveInfo()
                         }
                         .buttonStyle(InkButtonStyle(prominent: true))

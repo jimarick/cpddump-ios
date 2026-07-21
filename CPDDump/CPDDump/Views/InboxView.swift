@@ -27,9 +27,12 @@ final class InboxModel {
 
     var anyBusy: Bool { items.contains { $0.status.isBusy } }
 
-    func bin(_ item: InboxItem, _ session: Session) async {
+    func bin(_ item: InboxItem, _ session: Session, neverAgain: Bool = false) async {
         items.removeAll { $0.id == item.id }
-        try? await session.api.dismiss(id: item.id)
+        try? await session.api.dismiss(
+            id: item.id,
+            neverAgainTitle: neverAgain ? item.displayTitle : nil
+        )
         await refresh(session)
     }
 
@@ -126,6 +129,14 @@ struct InboxView: View {
                     Task { await model.bin(item, session) }
                 }
                 binCandidate = nil
+            }
+            if binCandidate?.source == "email" || binCandidate?.source == "calendar" {
+                Button("Bin & never show items like this", role: .destructive) {
+                    if let item = binCandidate {
+                        Task { await model.bin(item, session, neverAgain: true) }
+                    }
+                    binCandidate = nil
+                }
             }
             Button("Keep it", role: .cancel) { binCandidate = nil }
         }
