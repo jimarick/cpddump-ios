@@ -168,6 +168,10 @@ struct InkButtonStyle: ButtonStyle {
         configuration.label
             .font(PaperInk.button(15.5, weight: prominent ? .bold : .semibold))
             .foregroundStyle(prominent ? .white : PaperInk.ink)
+            // A button label never wraps — it claims its full width even
+            // inside equal-share footer columns.
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, prominent ? 26 : 22)
             .padding(.vertical, 13)
             .background(prominent ? PaperInk.brand : .white)
