@@ -157,6 +157,38 @@ struct APIClient {
         return wrapper.activity
     }
 
+    // MARK: Takeaways
+
+    /// Every current-period activity with at least one nugget or action.
+    func fetchTakeaways() async throws -> TakeawaysResponse {
+        try await send("GET", "takeaways")
+    }
+
+    /// Tick/un-tick, reword, or re-kind one nugget/action; returns the
+    /// activity's fresh lists.
+    func updateTakeaway(activityId: Int, itemId: String, done: Bool? = nil, kind: String? = nil, text: String? = nil) async throws -> TakeawayLists {
+        var body: [String: Any] = [:]
+        if let done { body["done"] = done }
+        if let kind { body["kind"] = kind }
+        if let text { body["text"] = text }
+        return try await send(
+            "PATCH",
+            "activities/\(activityId)/takeaways/\(itemId)",
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+    }
+
+    func deleteTakeaway(activityId: Int, itemId: String) async throws -> TakeawayLists {
+        try await send("DELETE", "activities/\(activityId)/takeaways/\(itemId)")
+    }
+
+    /// Opt in after the fact: AI-extract (and save) takeaways for an
+    /// activity that has none. 422 when it already has some or the AI
+    /// failed, 429 on budget — both carry a `message`.
+    func generateTakeaways(activityId: Int) async throws -> TakeawayLists {
+        try await send("POST", "activities/\(activityId)/takeaways/generate")
+    }
+
     /// Post-approval remedy: purge stored files to stubs and scrub
     /// identifiers from the entry's text — the entry itself is kept.
     func removeActivityPii(id: Int) async throws -> ActivityDetail {
@@ -206,6 +238,16 @@ struct APIClient {
         ])
     }
 
+    /// Push preferences; returns the full fresh user payload.
+    func updatePreferences(weeklyNudge: Bool? = nil, morningGem: Bool? = nil) async throws -> UserPayload {
+        struct Wrapper: Codable { var user: UserPayload }
+        var body: [String: Any] = [:]
+        if let weeklyNudge { body["push_weekly_nudge_enabled"] = weeklyNudge }
+        if let morningGem { body["push_morning_gem_enabled"] = morningGem }
+        let wrapper: Wrapper = try await send("PATCH", "user/preferences", body: try JSONSerialization.data(withJSONObject: body))
+        return wrapper.user
+    }
+
     // MARK: AI assist
 
     func textAssist(field: String, text: String?, context: String?) async throws -> String {
@@ -215,6 +257,25 @@ struct APIClient {
         if let context, !context.isEmpty { body["context"] = context }
         let wrapper: Wrapper = try await send("POST", "ai/text-assist", json: body)
         return wrapper.text
+    }
+
+    /// The review wizard's single AI pass: the user's notes plus the facts
+    /// in; details, reflections, takeaways and silent categorisation out.
+    func composeReview(
+        notes: String,
+        title: String? = nil,
+        activityTypeSlug: String? = nil,
+        startsOn: String? = nil,
+        organisation: String? = nil,
+        cpdPoints: Double? = nil
+    ) async throws -> ComposedReview {
+        var body: [String: Any] = ["notes": notes]
+        if let title, !title.isEmpty { body["title"] = title }
+        if let activityTypeSlug, !activityTypeSlug.isEmpty { body["activity_type_slug"] = activityTypeSlug }
+        if let startsOn { body["starts_on"] = startsOn }
+        if let organisation, !organisation.isEmpty { body["organisation"] = organisation }
+        if let cpdPoints { body["cpd_points"] = cpdPoints }
+        return try await send("POST", "ai/compose-review", body: try JSONSerialization.data(withJSONObject: body))
     }
 
     /// The talk-first capture: one ramble in, an answer per reflection

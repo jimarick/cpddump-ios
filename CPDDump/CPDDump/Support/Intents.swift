@@ -11,6 +11,8 @@ final class LaunchActions {
     var wantsInbox = false
     /// Set when a push notification deep-links to a specific inbox item.
     var reviewItemId: Int?
+    /// Set when a push (e.g. the morning gem) deep-links to an approved activity.
+    var openActivityId: Int?
 }
 
 /// "Dump a voice note" — recording starts before the app is even visible.

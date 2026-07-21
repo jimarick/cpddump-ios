@@ -16,11 +16,16 @@ struct UserPayload: Codable, Equatable {
     var period: AppraisalPeriod?
     /// "ask" | "always" | "never" — nil (older cached payloads) means "ask".
     var attachmentRetention: String?
+    /// Push preferences — nil on older cached payloads.
+    var pushWeeklyNudgeEnabled: Bool?
+    var pushMorningGemEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name, email, onboarded, profession, period
         case dumpAddress = "dump_address"
         case attachmentRetention = "attachment_retention"
+        case pushWeeklyNudgeEnabled = "push_weekly_nudge_enabled"
+        case pushMorningGemEnabled = "push_morning_gem_enabled"
     }
 
     var asksAboutAttachments: Bool {
@@ -138,6 +143,7 @@ struct InboxItem: Codable, Identifiable {
         case "upload": "photo"
         case "calendar": "calendar"
         case "recurring": "repeat"
+        case "debrief": "list.bullet.clipboard"
         default: "square.and.pencil"
         }
     }
@@ -171,6 +177,27 @@ struct MergeSuggestion: Codable, Identifiable, Hashable {
     var reason: String?
 }
 
+/// One extracted nugget (worth remembering) or action (worth doing).
+/// The id is server-generated and stable across edits and swaps.
+struct Takeaway: Codable, Identifiable, Hashable {
+    let id: String
+    var text: String
+    var done: Bool
+
+    init(id: String, text: String, done: Bool = false) {
+        self.id = id
+        self.text = text
+        self.done = done
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        text = (try? container.decode(String.self, forKey: .text)) ?? ""
+        done = (try? container.decode(Bool.self, forKey: .done)) ?? false
+    }
+}
+
 /// The InboxAnalystAgent's extraction — every field optional so a partial
 /// or failed analysis still decodes.
 struct AiAnalysis: Codable {
@@ -180,7 +207,14 @@ struct AiAnalysis: Codable {
     var endsOn: String?
     var organisation: String?
     var cpdPoints: Double?
+    /// At most two sentences of prose.
     var summary: String?
+    /// The user's own words from the evidence, verbatim (email commentary,
+    /// voice transcript) — seeds the review wizard's notes step.
+    var userNotes: String?
+    var nuggets: [Takeaway]?
+    var actions: [Takeaway]?
+    /// Pre-rename items only — superseded by `nuggets`, kept as a fallback.
     var suggestedLearningPoints: [String]?
     var reflectionDraft: [String: String?]?
     /// Where a pre-filled reflection came from, quoting the user's words.
@@ -196,7 +230,8 @@ struct AiAnalysis: Codable {
     var missingEvidence: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case title, organisation, summary, confidence
+        case title, organisation, summary, confidence, nuggets, actions
+        case userNotes = "user_notes"
         case activityTypeSlug = "activity_type_slug"
         case startsOn = "starts_on"
         case endsOn = "ends_on"
@@ -223,6 +258,9 @@ struct AiAnalysis: Codable {
         organisation = try? container.decode(String.self, forKey: .organisation)
         cpdPoints = Self.flexibleNumber(container, .cpdPoints)
         summary = try? container.decode(String.self, forKey: .summary)
+        userNotes = try? container.decode(String.self, forKey: .userNotes)
+        nuggets = try? container.decode([Takeaway].self, forKey: .nuggets)
+        actions = try? container.decode([Takeaway].self, forKey: .actions)
         suggestedLearningPoints = try? container.decode([String].self, forKey: .suggestedLearningPoints)
         reflectionDraft = try? container.decode([String: String?].self, forKey: .reflectionDraft)
         reflectionSource = try? container.decode(String.self, forKey: .reflectionSource)
@@ -309,6 +347,10 @@ struct ActivityDetail: Codable, Identifiable {
     var domains: [CodeName]
     var projects: [ProjectRef]
     var attachments: [AttachmentRef]
+    var nuggets: [Takeaway]
+    var actions: [Takeaway]
+    /// The debrief notes this entry was written from, if any.
+    var sourceNotes: String?
     /// Non-empty when this is a merged entry hiding absorbed sources.
     var mergedFrom: [MergedSource]
     /// Was once inside a merged entry, later split back out.
@@ -318,9 +360,11 @@ struct ActivityDetail: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, organisation, details, reflection, type, categories, domains, projects, attachments
+        case nuggets, actions
         case startsOn = "starts_on"
         case endsOn = "ends_on"
         case cpdPoints = "cpd_points"
+        case sourceNotes = "source_notes"
         case mergedFrom = "merged_from"
         case formerlyMerged = "formerly_merged"
         case mergeUnreviewed = "merge_unreviewed"
@@ -341,6 +385,9 @@ struct ActivityDetail: Codable, Identifiable {
         domains = (try? container.decode([CodeName].self, forKey: .domains)) ?? []
         projects = (try? container.decode([ProjectRef].self, forKey: .projects)) ?? []
         attachments = (try? container.decode([AttachmentRef].self, forKey: .attachments)) ?? []
+        nuggets = (try? container.decode([Takeaway].self, forKey: .nuggets)) ?? []
+        actions = (try? container.decode([Takeaway].self, forKey: .actions)) ?? []
+        sourceNotes = try? container.decode(String.self, forKey: .sourceNotes)
         mergedFrom = (try? container.decode([MergedSource].self, forKey: .mergedFrom)) ?? []
         formerlyMerged = try? container.decode(Bool.self, forKey: .formerlyMerged)
         mergeUnreviewed = try? container.decode(Bool.self, forKey: .mergeUnreviewed)
@@ -398,6 +445,97 @@ struct ActivitiesPage: Codable {
             case currentPage = "current_page"
             case lastPage = "last_page"
         }
+    }
+}
+
+// MARK: - Takeaways
+
+/// GET takeaways — every current-period activity with at least one nugget
+/// or action (done ones included), newest first.
+struct TakeawaysResponse: Codable {
+    var period: AppraisalPeriod?
+    var activities: [TakeawayActivity]
+
+    enum CodingKeys: String, CodingKey {
+        case period, activities
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        period = try? container.decode(AppraisalPeriod.self, forKey: .period)
+        activities = (try? container.decode([TakeawayActivity].self, forKey: .activities)) ?? []
+    }
+}
+
+struct TakeawayActivity: Codable, Identifiable {
+    var id: Int
+    var title: String
+    var startsOn: String?
+    var type: ActivityTypeRef
+    var nuggets: [Takeaway]
+    var actions: [Takeaway]
+    var hasSourceNotes: Bool
+    var sourceNotes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, type, nuggets, actions
+        case startsOn = "starts_on"
+        case hasSourceNotes = "has_source_notes"
+        case sourceNotes = "source_notes"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        startsOn = try? container.decode(String.self, forKey: .startsOn)
+        type = try container.decode(ActivityTypeRef.self, forKey: .type)
+        nuggets = (try? container.decode([Takeaway].self, forKey: .nuggets)) ?? []
+        actions = (try? container.decode([Takeaway].self, forKey: .actions)) ?? []
+        hasSourceNotes = (try? container.decode(Bool.self, forKey: .hasSourceNotes)) ?? false
+        sourceNotes = try? container.decode(String.self, forKey: .sourceNotes)
+    }
+}
+
+/// POST ai/compose-review — the wizard's single AI pass: the user's notes
+/// plus the facts in; prose, reflections, takeaways and silent filing out.
+struct ComposedReview: Codable {
+    var details: String?
+    var reflection: [String: String?]?
+    var nuggets: [Takeaway]?
+    var actions: [Takeaway]?
+    var categorySlugs: [String]?
+    var domainCodes: [String]?
+    var attributeCodes: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case details, reflection, nuggets, actions
+        case categorySlugs = "category_slugs"
+        case domainCodes = "domain_codes"
+        case attributeCodes = "attribute_codes"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        details = try? container.decode(String.self, forKey: .details)
+        reflection = try? container.decode([String: String?].self, forKey: .reflection)
+        nuggets = try? container.decode([Takeaway].self, forKey: .nuggets)
+        actions = try? container.decode([Takeaway].self, forKey: .actions)
+        categorySlugs = try? container.decode([String].self, forKey: .categorySlugs)
+        domainCodes = try? container.decode([String].self, forKey: .domainCodes)
+        attributeCodes = try? container.decode([String].self, forKey: .attributeCodes)
+    }
+}
+
+/// PATCH/DELETE takeaway responses: the activity's fresh lists.
+struct TakeawayLists: Codable {
+    var nuggets: [Takeaway]
+    var actions: [Takeaway]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nuggets = (try? container.decode([Takeaway].self, forKey: .nuggets)) ?? []
+        actions = (try? container.decode([Takeaway].self, forKey: .actions)) ?? []
     }
 }
 
@@ -472,6 +610,10 @@ struct ApprovePayload: Codable {
     var organisation: String?
     var cpdPoints: Double
     var summary: String?
+    /// Always sent (even empty) so the user's edits win over the AI extraction.
+    var nuggets: [Takeaway]?
+    var actions: [Takeaway]?
+    var sourceNotes: String?
     var reflectionDraft: [String: String]?
     var categorySlugs: [String]?
     var domainCodes: [String]?
@@ -482,11 +624,12 @@ struct ApprovePayload: Codable {
     var piiAck: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case title, organisation, summary
+        case title, organisation, summary, nuggets, actions
         case activityTypeSlug = "activity_type_slug"
         case startsOn = "starts_on"
         case endsOn = "ends_on"
         case cpdPoints = "cpd_points"
+        case sourceNotes = "source_notes"
         case reflectionDraft = "reflection_draft"
         case categorySlugs = "category_slugs"
         case domainCodes = "domain_codes"

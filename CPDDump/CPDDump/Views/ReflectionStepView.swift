@@ -27,6 +27,9 @@ struct ReflectionStepView: View {
     @Binding var talk: ReflectionTalkState
     /// The analyst's note on where a pre-filled reflection came from.
     var reflectionSource: String?
+    /// Vertical size of each answer box — the review wizard passes a
+    /// taller range so the boxes read as writing spaces.
+    var boxLineLimit: ClosedRange<Int> = 3 ... 10
 
     @State private var busyKey: String?
     @State private var recorder = DictationRecorder()
@@ -276,13 +279,10 @@ struct ReflectionStepView: View {
                 promptField(prompt)
             }
 
-            HStack(spacing: 5) {
-                Sparkle(size: 13)
-                Text("dictate your ramble, then let the sparkle tidy it into prose")
-                    .font(PaperInk.hand(19))
-                    .foregroundStyle(PaperInk.brandDark)
-                    .tilt(-1)
-            }
+            Text("Dictate your ramble, then let the sparkle tidy it into prose")
+                .font(PaperInk.hand(19))
+                .foregroundStyle(PaperInk.brandDark)
+                .tilt(-1)
         }
         .onAppear { talk.dismissed = true }
     }
@@ -319,7 +319,7 @@ struct ReflectionStepView: View {
 
             TextField(prompt.question, text: binding(for: prompt.key), axis: .vertical)
                 .font(PaperInk.sans(14))
-                .lineLimit(3 ... 10)
+                .lineLimit(boxLineLimit)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(.white)

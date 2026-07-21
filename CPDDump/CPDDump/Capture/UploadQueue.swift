@@ -82,6 +82,19 @@ final class UploadQueue: NSObject {
         enqueue(multipart, label: title, symbol: "square.and.pencil", session: session)
     }
 
+    /// Debrief notes: pasted/dictated text, optionally with the day it
+    /// happened — the server files it as source "debrief" and mines the
+    /// takeaways.
+    func enqueueDebrief(title: String?, occurredOn: String?, notes: String, url: String?, session: Session) {
+        let multipart = MultipartBody()
+        if let title, !title.isEmpty { multipart.addField(name: "title", value: title) }
+        if let occurredOn, !occurredOn.isEmpty { multipart.addField(name: "occurred_on", value: occurredOn) }
+        multipart.addField(name: "notes", value: notes)
+        if let url, !url.isEmpty { multipart.addField(name: "url", value: url) }
+        let label = title?.isEmpty == false ? title! : "Debrief notes"
+        enqueue(multipart, label: label, symbol: "list.bullet.clipboard", session: session)
+    }
+
     private func enqueue(_ multipart: MultipartBody, label: String, symbol: String, session: Session) {
         let id = UUID()
         let bodyFile = directory.appending(path: "\(id.uuidString).body")

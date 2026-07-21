@@ -10,9 +10,24 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private var center: UNUserNotificationCenter { .current() }
 
+    /// The morning gem's "Got it — don't show again" action.
+    private nonisolated static let morningGemDoneAction = "MORNING_GEM_DONE"
+
     /// Called once at launch.
     func bootstrap() {
         center.delegate = self
+        center.setNotificationCategories([
+            UNNotificationCategory(
+                identifier: "MORNING_GEM",
+                actions: [
+                    UNNotificationAction(
+                        identifier: Self.morningGemDoneAction,
+                        title: "Got it — don't show again"
+                    ),
+                ],
+                intentIdentifiers: []
+            ),
+        ])
         registerIfAuthorized()
     }
 
@@ -84,14 +99,41 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        let itemId = userInfo["inbox_item_id"] as? Int
-            ?? (userInfo["inbox_item_id"] as? String).flatMap(Int.init)
+        let itemId = Self.intValue(userInfo["inbox_item_id"])
+        let activityId = Self.intValue(userInfo["activity_id"])
+        let nuggetId = userInfo["nugget_id"] as? String
+
+        // "Got it" on the morning gem: tick the nugget quietly, no app opening.
+        if response.actionIdentifier == Self.morningGemDoneAction {
+            if let activityId, let nuggetId {
+                await MainActor.run {
+                    self.markMorningGemDone(activityId: activityId, nuggetId: nuggetId)
+                }
+            }
+            return
+        }
+
         await MainActor.run {
             if let itemId {
                 LaunchActions.shared.reviewItemId = itemId
+            } else if let activityId {
+                LaunchActions.shared.openActivityId = activityId
             } else {
                 LaunchActions.shared.wantsInbox = true
             }
+        }
+    }
+
+    /// APNs payloads deliver numbers as Int or String depending on encoder.
+    private nonisolated static func intValue(_ value: Any?) -> Int? {
+        value as? Int ?? (value as? String).flatMap(Int.init)
+    }
+
+    private func markMorningGemDone(activityId: Int, nuggetId: String) {
+        guard let auth = Keychain.read(account: "token") else { return }
+        let api = APIClient(baseURL: SharedStorage.serverURL, token: auth)
+        Task {
+            _ = try? await api.updateTakeaway(activityId: activityId, itemId: nuggetId, done: true)
         }
     }
 }

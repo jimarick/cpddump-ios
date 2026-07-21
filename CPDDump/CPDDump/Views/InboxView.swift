@@ -92,10 +92,13 @@ struct InboxView: View {
             // Breathing room so the dashed tray edge never touches the
             // tab bar's divider — matches the side margins.
             .padding(.bottom, 14)
-            .overlay(alignment: .bottom) {
+            .overlay(alignment: .bottomLeading) {
                 if !selecting, let stats = model.stats?.stats {
+                    // Bottom-left inside the dotted wall, mirroring the
+                    // floating mic's inset on the right — same baseline.
                     StatsSummaryPill.awaiting(stats)
-                        .padding(.bottom, 26)
+                        .padding(.leading, 32)
+                        .padding(.bottom, 32)
                 }
             }
 
@@ -251,8 +254,9 @@ struct InboxView: View {
                             }
                         }
                         .padding(12)
-                        // Room so the last rows can scroll clear of the pill.
-                        .padding(.bottom, 40)
+                        // Room so the last rows can scroll clear of the
+                        // pill and the floating mic.
+                        .padding(.bottom, 72)
                         .background(
                             GeometryReader { geometry in
                                 Color.clear.preference(

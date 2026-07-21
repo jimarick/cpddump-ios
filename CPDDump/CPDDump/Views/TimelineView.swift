@@ -55,9 +55,11 @@ struct TimelineView: View {
     var onMerge: (MergeSeed) -> Void
 
     @State private var selectedIds: Set<Int> = []
+    /// Programmatic pushes (activity-id deep links from the morning gem).
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             VStack(spacing: 0) {
                 header
 
@@ -81,6 +83,12 @@ struct TimelineView: View {
                     Task { await model.load(session, reset: true) }
                 }
             }
+            // Deep links only carry an id, not a summary.
+            .navigationDestination(for: Int.self) { activityId in
+                ActivityDetailView(activityId: activityId) {
+                    Task { await model.load(session, reset: true) }
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 if selecting { mergeBar }
             }
@@ -89,6 +97,17 @@ struct TimelineView: View {
             await session.loadReference()
             await model.load(session, reset: true)
         }
+        .onAppear { consumeDeepLink() }
+        .onChange(of: LaunchActions.shared.openActivityId) {
+            consumeDeepLink()
+        }
+    }
+
+    /// A push (the morning gem) named an activity — go straight to it.
+    private func consumeDeepLink() {
+        guard let activityId = LaunchActions.shared.openActivityId else { return }
+        LaunchActions.shared.openActivityId = nil
+        path.append(activityId)
     }
 
     /// In-content header matching the inbox: big leading title, plain
@@ -415,6 +434,9 @@ struct ActivityDetailView: View {
     @State private var previewFile: PreviewFile?
     @State private var isWorking = false
     @State private var deletingAttachment: AttachmentRef?
+    @State private var generatingTakeaways = false
+    @State private var takeawaysError: String?
+    @State private var showingTakeawaysHelp = false
 
     var body: some View {
         ScrollView {
@@ -461,6 +483,8 @@ struct ActivityDetailView: View {
                             }
                         }
                     }
+
+                    takeawaysSection(activity)
 
                     if !activity.attachments.isEmpty {
                         // Tap to preview; the ✕ deletes (kept files only).
@@ -642,6 +666,90 @@ struct ActivityDetailView: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    /// Takeaways are opt-in per activity: entries without any get a
+    /// "Generate" button; entries with some show them read-only (ticking
+    /// and editing live on the Takeaways tab).
+    @ViewBuilder
+    private func takeawaysSection(_ activity: ActivityDetail) -> some View {
+        if activity.nuggets.isEmpty && activity.actions.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Button {
+                        generateTakeaways()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if generatingTakeaways {
+                                ProgressView().controlSize(.mini).tint(.white)
+                            } else {
+                                Sparkle(size: 13, color: .white)
+                            }
+                            Text(generatingTakeaways ? "Panning for nuggets…" : "Generate takeaways")
+                        }
+                    }
+                    .buttonStyle(InkButtonStyle(prominent: true))
+                    .disabled(generatingTakeaways || isWorking)
+
+                    Button {
+                        showingTakeawaysHelp = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 15))
+                            .foregroundStyle(PaperInk.stone400)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("What are takeaways?")
+                    .alert("Takeaways", isPresented: $showingTakeawaysHelp) {
+                        Button("OK", role: .cancel) {}
+                    } message: {
+                        Text("Pulls nuggets and actions from this entry onto your Takeaways wall — fed back to you as morning gems and weekly recaps until you tick them done.")
+                    }
+                }
+
+                if let takeawaysError {
+                    Text(takeawaysError)
+                        .font(PaperInk.sans(12, weight: .semibold))
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.top, 2)
+        } else {
+            section("Takeaways") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(activity.nuggets) { takeawayBullet($0, accent: false) }
+                    ForEach(activity.actions) { takeawayBullet($0, accent: true) }
+                }
+            }
+        }
+    }
+
+    private func takeawayBullet(_ item: Takeaway, accent: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("•")
+                .font(PaperInk.sans(15, weight: .heavy))
+                .foregroundStyle(accent ? PaperInk.brand : PaperInk.ink)
+            Text(item.text)
+                .font(PaperInk.sans(14))
+                .strikethrough(item.done)
+                .foregroundStyle(item.done ? PaperInk.stone500 : PaperInk.ink)
+        }
+    }
+
+    private func generateTakeaways() {
+        generatingTakeaways = true
+        takeawaysError = nil
+        Task {
+            defer { generatingTakeaways = false }
+            do {
+                let lists = try await session.api.generateTakeaways(activityId: activityId)
+                activity?.nuggets = lists.nuggets
+                activity?.actions = lists.actions
+                onChanged?()
+            } catch {
+                takeawaysError = error.localizedDescription
+            }
+        }
     }
 
     private func removeInfo() {

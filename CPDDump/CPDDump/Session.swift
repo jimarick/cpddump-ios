@@ -76,6 +76,11 @@ final class Session {
     /// the cached identity once per launch.
     func refreshUser() async {
         guard isSignedIn, let fresh = try? await api.me() else { return }
+        updateUser(fresh)
+    }
+
+    /// Adopt a fresh user payload (e.g. after a preferences PATCH).
+    func updateUser(_ fresh: UserPayload) {
         user = fresh
         if let data = try? JSONEncoder().encode(fresh) {
             UserDefaults.standard.set(data, forKey: "user")

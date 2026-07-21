@@ -1,20 +1,23 @@
 import SwiftUI
 
-/// Custom paper tab bar: Inbox | mic FAB | Timeline. Settings hides behind
-/// the avatar, as on the web.
+/// Custom paper tab bar: Inbox | Timeline | Takeaways, with the mic as a
+/// floating capture button over the inbox. Settings hides behind the
+/// avatar, as on the web.
 struct MainTabView: View {
     @Environment(Session.self) private var session
     @Environment(\.scenePhase) private var scenePhase
 
-    enum Tab { case inbox, timeline }
+    enum Tab { case inbox, timeline, takeaways }
 
     @State private var tab: Tab = .inbox
     @State private var inboxModel = InboxModel()
     @State private var timelineModel = TimelineModel()
+    @State private var takeawaysModel = TakeawaysModel()
     @State private var reviewItem: InboxItem?
     @State private var mergeSeed: MergeSeed?
     @State private var showRecorder = false
     @State private var showDumpSheet = false
+    @State private var showSettings = false
     // While either page is in selection mode its merge bar replaces the
     // tab bar; the tabs come back on cancel or merge.
     @State private var inboxSelecting = false
@@ -39,9 +42,18 @@ struct MainTabView: View {
                     TimelineView(model: timelineModel, selecting: $timelineSelecting) { seed in
                         mergeSeed = seed
                     }
+                case .takeaways:
+                    TakeawaysView(model: takeawaysModel)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottomTrailing) {
+                // The capture mic floats over the inbox, its centre level
+                // with the awaiting pill. Steps aside during selection.
+                if tab == .inbox && !inboxSelecting {
+                    micFab
+                }
+            }
 
             if !(inboxSelecting || timelineSelecting) {
                 tabBar
@@ -85,6 +97,10 @@ struct MainTabView: View {
             }
             .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showSettings) {
+            SettingsSheetView()
+                .presentationDetents([.medium, .large])
+        }
         .task {
             UploadQueue.shared.onUploaded = {
                 NotificationManager.shared.promptAfterFirstDumpIfNeeded()
@@ -101,6 +117,10 @@ struct MainTabView: View {
         }
         .onChange(of: LaunchActions.shared.wantsInbox) {
             consumeLaunchAction()
+        }
+        .onChange(of: LaunchActions.shared.openActivityId) {
+            // TimelineView owns consuming the id; we just surface the tab.
+            if LaunchActions.shared.openActivityId != nil { tab = .timeline }
         }
         .onChange(of: scenePhase) { _, phase in
             // Returning from elsewhere (e.g. after using the share extension):
@@ -133,6 +153,9 @@ struct MainTabView: View {
                 }
                 await inboxModel.refresh(session)
             }
+        }
+        if LaunchActions.shared.openActivityId != nil {
+            tab = .timeline
         }
     }
 
@@ -181,6 +204,11 @@ struct MainTabView: View {
                     Label("Privacy policy", systemImage: "lock")
                 }
                 Divider()
+                Button {
+                    showSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
                 Button("Sign out", role: .destructive) {
                     Task { await session.signOut() }
                 }
@@ -201,27 +229,39 @@ struct MainTabView: View {
         }
     }
 
+    /// The floating capture mic — same sticker styling as ever, now
+    /// hovering bottom-right over the inbox instead of splitting the tabs.
+    private var micFab: some View {
+        Button {
+            showRecorder = true
+        } label: {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 58, height: 58)
+                .background(PaperInk.brand)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(PaperInk.ink, lineWidth: 2.5))
+                .stickerShadow(offset: 3, opacity: 1)
+                .tilt(-2)
+        }
+        // Clearly inside the inbox's dotted wall: the tray is inset 14pt
+        // from the screen edges, so 32pt leaves an 18pt gap between the
+        // circle and both dashed lines — mirrored by the awaiting pill on
+        // the left, so the two share a baseline.
+        .padding(.trailing, 32)
+        .padding(.bottom, 32)
+    }
+
     private var tabBar: some View {
         HStack {
             tabButton("Inbox", symbol: "tray.full", value: .inbox)
                 .frame(maxWidth: .infinity)
 
-            Button {
-                showRecorder = true
-            } label: {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
-                    .background(PaperInk.brand)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(PaperInk.ink, lineWidth: 2.5))
-                    .stickerShadow(offset: 3, opacity: 1)
-                    .tilt(-2)
-            }
-            .offset(y: -18)
-
             tabButton("Timeline", symbol: "calendar", value: .timeline)
+                .frame(maxWidth: .infinity)
+
+            tabButton("Takeaways", symbol: "sparkles", value: .takeaways)
                 .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 24)

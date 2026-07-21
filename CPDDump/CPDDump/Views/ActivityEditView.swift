@@ -65,7 +65,10 @@ struct ActivityEditView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        FieldLabel(text: "Points")
+                        HStack(spacing: 5) {
+                            FieldLabel(text: "Points")
+                            CpdPointsInfoButton()
+                        }
                         TextField("1", text: $points)
                             .keyboardType(.decimalPad)
                             .font(PaperInk.sans(14))
