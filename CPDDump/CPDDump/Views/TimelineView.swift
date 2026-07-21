@@ -460,12 +460,14 @@ struct ActivityDetailView: View {
                     // the AI write-up and the user's own words, verbatim.
                     if let notes = activity.sourceNotes, !notes.isEmpty {
                         writeUpToggle
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
 
                     if showingMyNotes, let notes = activity.sourceNotes, !notes.isEmpty {
-                        section("My notes") {
+                        section("Original notes") {
                             Text(notes)
                                 .font(PaperInk.sans(14))
+                                .italic()
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else {
@@ -500,9 +502,14 @@ struct ActivityDetailView: View {
                         }
                     }
 
-                    DashedDivider()
+                    // Takeaways belong to the final version — the
+                    // original-notes tab hides them. (showingMyNotes can
+                    // only be true when the entry has notes.)
+                    if !showingMyNotes {
+                        DashedDivider()
 
-                    takeawaysSection(activity)
+                        takeawaysSection(activity)
+                    }
 
                     if !activity.attachments.isEmpty {
                         // Tap to preview; the ✕ deletes (kept files only).
@@ -686,12 +693,12 @@ struct ActivityDetailView: View {
         .padding(.top, 4)
     }
 
-    /// Pill segmented toggle between the AI write-up and the verbatim
-    /// debrief notes.
+    /// Pill segmented toggle between the finished write-up and the
+    /// verbatim debrief notes.
     private var writeUpToggle: some View {
         HStack(spacing: 3) {
-            writeUpSegment("AI write-up", active: !showingMyNotes) { showingMyNotes = false }
-            writeUpSegment("My notes", active: showingMyNotes) { showingMyNotes = true }
+            writeUpSegment("Final version", active: !showingMyNotes) { showingMyNotes = false }
+            writeUpSegment("Original notes", active: showingMyNotes) { showingMyNotes = true }
         }
         .padding(3)
         .background(PaperInk.paperAlt)
